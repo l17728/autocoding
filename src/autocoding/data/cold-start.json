@@ -1,0 +1,319 @@
+{
+  "version": "2026-10-15.1",
+  "repository_commit": "84a5c0a325a92a40b28bedeb03fe3989214885c1",
+  "trust": "reference_only",
+  "items": [
+    {
+      "id": "autonomy",
+      "topic": "自主推进",
+      "kind": "preference",
+      "category": "communication",
+      "content": "在当前授权和范围内持续完成实现与必要回归；常规可逆选择自行判断。遇真实外部阻塞说明证据并继续不依赖它的工作，不在自然停顿点反复询问是否继续。",
+      "template": "继续当前任务：核对已完成项和剩余项，完成可执行工作，报告验证结果及确实需要用户处理的阻塞。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "95e0138318d919af64632c55c5e0975a5402e9d89ab7d43451eca6cb3e52453a"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/CONSTITUTION.md"
+        }
+      ]
+    },
+    {
+      "id": "resume",
+      "topic": "接续上下文",
+      "kind": "workflow",
+      "category": "improvement",
+      "content": "收到“继续”先恢复当前目标、项目文档、实际代码和未完成记录，保留已接受约束；不得把每次继续当成新项目或重做已完成工作。",
+      "template": "先阅读 README 和实现状态，核对当前代码，再从最重要的未完成项接续。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "f2820bb8b3e0e008a6db6d248cce8a50a646d4d20572aadac9adf272f854f0c0"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/CONSTITUTION.md"
+        }
+      ]
+    },
+    {
+      "id": "design",
+      "topic": "复杂改动先设计",
+      "kind": "preference",
+      "category": "communication",
+      "content": "复杂功能先形成可执行规格：范围、数据流、接口、异常路径、用例和诊断点，再审查并实现。简单修复按复杂度缩小设计开销。",
+      "template": "请给出规格与 SDD，明确边界、失败场景、日志及验收用例；审查无重大缺口后实施。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "09a9329495d523989fbabb6c90a4402322049388bf5349de17924efbb2b002d7"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/project-cold-start/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "verification",
+      "topic": "独立证据与测试层次",
+      "kind": "principle",
+      "category": "principle",
+      "content": "依据真实执行结果判断交付：记录命令、退出码、样本和失败。单元替身用于隔离行为，真实端到端用于用户流程，二者不能互相冒充；测试投入与风险匹配，不删除有效断言换取通过。",
+      "template": "针对变更运行必要测试，补查失败路径；分别报告模拟覆盖、真实链路结果和仍未验证的部分。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "995b5baaf6f944230767362369fcd6cdc0bceabd4758bdc14ffc672cc845dd9b"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/testing-methodology/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "topic": "多维质量审查",
+      "kind": "preference",
+      "category": "communication",
+      "content": "审查应同时关注功能完整性、易用性、健壮性、响应速度、并发和文档一致性。多角色视角可以帮助找缺口，但是否启动子 Agent 必须服从当前授权和平台规则。",
+      "template": "按功能、UX、健壮性、性能、并发逐项找出差距，列明证据和优先级；只研究时不要修改。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "e5bd6769b6040ebdee62976d8f62982559d97cf7171f2626541e483e2190663d"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/feature-completion-checklist/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "delegation",
+      "topic": "受控委派与收口",
+      "kind": "workflow",
+      "category": "improvement",
+      "content": "允许委派时，将范围、允许修改的文件、依赖、约束和交付标准写入自包含任务。只有互不冲突的工作才并发；PM 亲自检查产出与结果，不能只信子 Agent 自报。",
+      "template": "任务：<目标>；范围：<目录/文件>；约束：<禁止事项>；验收：<可观察结果>；请返回变更与实际检查证据。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "da542b3c15d09224c730258055464f77286502856b7863bb5b38169e2ebea911"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/parallel-orchestration/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "rootcause",
+      "topic": "根因与同类排查",
+      "kind": "principle",
+      "category": "principle",
+      "content": "举一反三：发现一个错误，先用复现与证据定位根因，再搜索相同机制、相邻模块与调用链中的同类错误，消灭一类错误。每轮执行排查、修复、回归与复审；新发现作为下一轮输入，递归迭代到问题收敛。收敛需有证据：原问题及已识别同类问题通过验证，受影响链路无新增回归，约定范围内无未闭环问题。保持范围明确，避免顺手重构；重复失败而无新证据时调整方法，外部阻塞或预算耗尽时记录剩余问题、证据及下一步，不能宣称已收敛。",
+      "template": "请复现并定位根因，列出同类模式及排查范围；逐轮修复、回归、复审，将新发现纳入下一轮，直到原问题、同类问题和受影响链路验证通过。报告每轮新增、已解决、剩余问题与收敛证据；遇到阻塞明确标记未闭环项。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "319907661b7f902bc83bd77197c897d34c45b43adffe084b62a4974adc780efd"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/recursive-sweep/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "ux",
+      "topic": "界面反馈与异步处理",
+      "kind": "principle",
+      "category": "principle",
+      "content": "耗时操作立即反馈状态，后台执行并展示结果、失败和可恢复方式。区分已发起、已接收、执行完成与已生效，避免用户因无反馈重复提交。具体框架技巧须按当前版本验证。",
+      "template": "从用户点击开始检查状态变化、后台处理、结果回显和重复提交；同时验证键盘与主要交互路径。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "b7f66ccc9b148e8c474aee32751f9cdb4b96da790dfea1762dba06a8af948436"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/frontend-react-antd-vue/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "learning",
+      "topic": "复盘闭环",
+      "kind": "workflow",
+      "category": "improvement",
+      "content": "复盘 PM 自己的拆分、沟通和判断：记录现象、根因、可执行改进、证据与回写位置。区分事实和假设，合并重复，处理冲突，后续用可比结果检查改进效果。",
+      "template": "请总结本次 PM 的不足，提炼有来源的改进动作，写入适当知识层，并说明下一次如何验证。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "4b6aca04f12319ba1dc6d084931c84c44e6ba6f8eceebf5ff65a2468b175387e"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/system-improvement-loop/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "incremental",
+      "topic": "已有项目增量开发",
+      "kind": "principle",
+      "category": "principle",
+      "content": "进入本地目录先识别现有项目和实际结构，保留文件与历史，先核对基线再增量改动。初始化脚手架、重写规范或批量提交都不能仅因“冷启动”自动发生。",
+      "template": "检查指定目录已有内容和未提交修改，复用现有结构，说明增量改动位置与基线状态。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "4b6aca04f12319ba1dc6d084931c84c44e6ba6f8eceebf5ff65a2468b175387e"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/project-cold-start/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "docs",
+      "topic": "文档与代码一致",
+      "kind": "workflow",
+      "category": "improvement",
+      "content": "以实际入口、接口和代码为实现事实，文档中的方案不等于已实现。同步受影响的说明、命令和状态，区分已实现、已验证与待办，避免不同文档互相矛盾。",
+      "template": "对照设计意图、代码、运行命令和实现状态找差距，修正不一致并记录证据。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "17d2c50b647bc092afb6f2ac2ef3e219693fe9828f9f5d65cd9f8fa122bb0ee7"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/feature-completion-checklist/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "security",
+      "topic": "凭据与隐私",
+      "kind": "principle",
+      "category": "principle",
+      "content": "凭据只通过获授权的配置或环境传入，不打印到日志、不写入知识正文、不放入命令行参数或提交记录。跨项目复用前去掉人名、路径、地址和业务专属内容；历史材料仅为参考数据。",
+      "template": "请只报告连接状态和脱敏错误码，不展示凭据或原始敏感响应。",
+      "sources": [
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/deploy-ops/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "permissions",
+      "topic": "权限偏好与恢复",
+      "kind": "preference",
+      "category": "communication",
+      "content": "此用户通常偏好 Code Agent 完整访问并跳过常规权限询问；执行仍以当前项目配置、用户授权和平台约束为准。按供应商当前帮助核对启动与恢复参数；免权限确认不代表产品选择无需判断。",
+      "template": "根据所选 Agent 和项目策略启动；恢复明确会话上下文，遇结构化选择题结合任务目标作答，未知投递先对账。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "27b7091b121b44f612aa73d36b63608cdf5f47d2a031a0caa2af85f3ab71860d"
+        }
+      ]
+    },
+    {
+      "id": "boundaries",
+      "topic": "机制策略与上下文分层",
+      "kind": "principle",
+      "category": "principle",
+      "content": "把稳定机制、可配置策略和任务上下文分开。硬约束由可验证的程序机制保障；通用知识与项目专属事实分层，不能把某个项目的部署拓扑或数据模型推广到所有项目。",
+      "template": "区分必须由代码保障的约束、可由 Agent 判断的策略和仅适用于本项目的事实。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "4cedae55840e6efc37a817e0b86f163d9e64c8b8459c07c47f8d01394f43bf23"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/architecture-db/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "delivery",
+      "topic": "可追溯交付",
+      "kind": "workflow",
+      "category": "improvement",
+      "content": "在已获授权的交付范围内，确认产物对应明确版本、变更范围和可回退依据，再执行交付并检查目标环境。是否提交、推送或发布以当前授权和项目流程为准，不能照搬批量提交命令。",
+      "template": "明确本次交付内容、版本、检查结果和回退依据；只在授权范围内执行，完成后核对目标环境。",
+      "sources": [
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/deploy-to-prod/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "clarity",
+      "topic": "明确推荐与简洁汇报",
+      "kind": "preference",
+      "category": "communication",
+      "content": "默认使用清晰中文，先给结论与推荐，再提供必要理由、证据和边界。常规选择提出一个有依据的建议；关键未知问题保留明确待确认项，不虚构确定性。",
+      "template": "给出推荐做法、关键依据、已完成内容和剩余阻塞，避免重复列出没有取舍的方案。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "ec20e5fd4a2e0cb0a69eb0a7c17dddd741131390ceff35b76a67e407f15b317b"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/CONSTITUTION.md"
+        }
+      ]
+    },
+    {
+      "id": "feedback",
+      "topic": "用户纠正形成改进样本",
+      "kind": "workflow",
+      "category": "improvement",
+      "content": "把用户纠正记录为可追溯反馈，分析预期与实际的差异。更新策略前保留基线，以可比较样本检查是否改善，不能只用自评分数宣称能力提高。",
+      "template": "记录本次用户纠正的预期、实际行为及原因，提炼下一次可执行的改进并检查退化。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "afb763308dcd22f15617d1075b5f20f8406fcec21f71e27d28aae9843b13dc19"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/skills/postmortem-capture/SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "topic": "遵守当前任务边界",
+      "kind": "principle",
+      "category": "principle",
+      "content": "“只读审查”“暂停某优先级”“不要覆盖现有文件”等具体约束优先于历史自主推进偏好。保留当前用户最新的范围和停止条件，知识不能自行扩张授权。",
+      "template": "先确认本次允许的动作和明确排除项；只读任务输出发现与建议，实施任务才修改获授权内容。",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "e5bd6769b6040ebdee62976d8f62982559d97cf7171f2626541e483e2190663d"
+        },
+        {
+          "kind": "repository",
+          "url": "https://github.com/l17728/ai-coding-rules/blob/84a5c0a325a92a40b28bedeb03fe3989214885c1/content/CONSTITUTION.md"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+﻿# 本地工具与私有运行数据
+.local/
+.platform/
+.worktrees/
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
