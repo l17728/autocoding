@@ -179,6 +179,14 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('opencode',record['provider_fallbacks'][0]['from'])
         self.assertEqual('codex',record['provider_fallbacks'][0]['to'])
 
+    async def test_generic_runner_timeout_uses_active_provider_for_fallback(self):
+        self.rows.append({'id':'run_old','task_id':'task_a','state':'reconciling',
+                          'provider':'claude','reason':'RUN_TIMEOUT_RECONCILIATION_REQUIRED'})
+        record={'assignments':{'task_a':'claude'},'agents':['codex','opencode','claude'],
+                'attempts':{'task_a':2}}
+        self.assertTrue(self.host.coordinator.fallback_provider(record,'task_a'))
+        self.assertEqual('codex',record['assignments']['task_a'])
+
     async def test_shutdown_cancels_children_before_releasing_reservations(self):
         self.task('task_a')
         self.task('task_b')

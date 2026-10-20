@@ -58,7 +58,14 @@ class Coordinator:
             return False
         current=record['assignments'].get(task_id,record.get('provider','claude'))
         upper=str(reason).upper()
-        if current.upper() not in upper or not any(code in upper for code in ('TIMEOUT','NETWORK','CONNECTION','TRANSPORT','RATE','LIMIT')):
+        external_failure=any(code in upper for code in ('TIMEOUT','NETWORK','CONNECTION','TRANSPORT','RATE','LIMIT'))
+        # Some runner failures are provider-neutral (for example a missing
+        # completion event).  The active assignment is still known, so a
+        # bounded fresh attempt on another configured provider is safer than
+        # leaving the batch stranded awaiting a human restart.
+        attributed=current.upper() in upper
+        generic_runner_failure=upper.startswith('RUN_TIMEOUT_') or upper.startswith('RUN_DELIVERY_')
+        if not external_failure or not (attributed or generic_runner_failure):
             return False
         candidates=[agent for agent in record.get('agents',[]) if agent!=current]
         if not candidates:
