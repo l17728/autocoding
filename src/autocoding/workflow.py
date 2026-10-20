@@ -73,7 +73,12 @@ class Workflow:
                         self.core._event(conn,'PMAutoRecoveredAttempt','pm',task=record['task_id'],
                                          run_id=record['id'],reason='RESTART_NEW_ATTEMPT')
                         conn.commit()
-                    self.save(record, 'reconciled', recovery_action='new_attempt',reason='RESTART_NEW_ATTEMPT')
+                    # Preserve the actual terminal reason.  The generic
+                    # restart marker is useful for audit, but the coordinator
+                    # needs the original provider failure to select a safe
+                    # alternate agent on the next attempt.
+                    self.save(record, 'reconciled', recovery_action='new_attempt',
+                              reconciliation_reason=record.get('reason'), reason='RESTART_NEW_ATTEMPT')
 
     def configuration(self, task_id):
         try:

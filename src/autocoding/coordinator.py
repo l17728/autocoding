@@ -52,10 +52,14 @@ class Coordinator:
         run and its failure reason stay in the durable ledger.
         """
         runs=[row for row in self.host.workflow.list() if row.get('task_id')==task_id]
-        latest=next((row for row in reversed(runs) if row.get('state')=='reconciling'),None)
-        if not latest or not latest.get('reason'):
+        latest=next((row for row in reversed(runs) if row.get('state') in {'reconciling','reconciled'}),None)
+        reason=(latest or {}).get('reconciliation_reason') or (latest or {}).get('reason')
+        if not latest or not reason:
             return False
         current=record['assignments'].get(task_id,record.get('provider','claude'))
+        upper=str(reason).upper()
+        if current.upper() not in upper or not any(code in upper for code in ('TIMEOUT','NETWORK','CONNECTION','TRANSPORT','RATE','LIMIT')):
+            return False
         candidates=[agent for agent in record.get('agents',[]) if agent!=current]
         if not candidates:
             return False
@@ -63,7 +67,7 @@ class Coordinator:
         record['assignments'][task_id]=replacement
         record.setdefault('provider_fallbacks',[]).append({
             'task_id':task_id,'from':current,'to':replacement,
-            'reason':latest['reason'],'at':self.core.clock()})
+            'reason':reason,'at':self.core.clock()})
         record.setdefault('attempts',{})[task_id]=0
         return True
 
@@ -75,9 +79,8 @@ class Coordinator:
                 # A batch may have paused only because one provider timed out.
                 # Change provider before calculating policies or spawning a
                 # new task attempt; no uncertain request is ever replayed.
-                if record['state']=='reconciling':
-                    for task_id in record['task_ids']:
-                        self.fallback_provider(record,task_id)
+                for task_id in record['task_ids']:
+                    self.fallback_provider(record,task_id)
                 policies, checks = {}, {}
                 for task_id in record['task_ids']:
                     _, selected, protected = self.host.workflow.configuration(task_id)
