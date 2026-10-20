@@ -44,6 +44,15 @@ class Coordinator:
             self.core._event(conn,'TaskBatchChanged','pm',batch_id=record['id'],state=state,task_ids=record['task_ids'])
             conn.commit()
 
+    def persisted_matches(self, record, state, active_tasks):
+        """Detect a stale process overwriting this live coordinator's row."""
+        with self.core.connection() as conn:
+            row=conn.execute('SELECT value FROM metadata WHERE key=?',('batch:'+record['id'],)).fetchone()
+        if not row:
+            return False
+        current=json.loads(row['value'])
+        return current.get('state')==state and current.get('active_tasks',[])==active_tasks
+
     def fallback_provider(self, record, task_id):
         """Move a reconciled task to another configured provider once.
 
@@ -181,7 +190,12 @@ class Coordinator:
                         record['attempts'][tid]=record['attempts'].get(tid,0)+1
                         running[tid]=(run['id'],self.host.workflow.active[tid])
                 state='paused' if self.host.paused else 'running'
-                if record['state']!=state or record.get('active_tasks')!=list(running):
+                # A previous service can finish shutdown after a replacement
+                # process starts and overwrite this row with reconciliation.
+                # Reassert the live loop's durable state instead of leaving
+                # the UI and recovery path falsely paused.
+                if (record['state']!=state or record.get('active_tasks')!=list(running)
+                        or not self.persisted_matches(record,state,list(running))):
                     self.save(record,state,active_tasks=list(running))
                 if not running:
                     await asyncio.sleep(.2)
