@@ -44,11 +44,40 @@ class Coordinator:
             self.core._event(conn,'TaskBatchChanged','pm',batch_id=record['id'],state=state,task_ids=record['task_ids'])
             conn.commit()
 
+    def fallback_provider(self, record, task_id):
+        """Move a reconciled task to another configured provider once.
+
+        A fresh provider/session is materially different from replaying an
+        uncertain turn.  It gets its own bounded retry budget, while the old
+        run and its failure reason stay in the durable ledger.
+        """
+        runs=[row for row in self.host.workflow.list() if row.get('task_id')==task_id]
+        latest=next((row for row in reversed(runs) if row.get('state')=='reconciling'),None)
+        if not latest or not latest.get('reason'):
+            return False
+        current=record['assignments'].get(task_id,record.get('provider','claude'))
+        candidates=[agent for agent in record.get('agents',[]) if agent!=current]
+        if not candidates:
+            return False
+        replacement=candidates[0]
+        record['assignments'][task_id]=replacement
+        record.setdefault('provider_fallbacks',[]).append({
+            'task_id':task_id,'from':current,'to':replacement,
+            'reason':latest['reason'],'at':self.core.clock()})
+        record.setdefault('attempts',{})[task_id]=0
+        return True
+
     def recover(self):
         for record in self.list():
             if record['state'] not in {'queued','running','paused','reconciling'}:
                 continue
             try:
+                # A batch may have paused only because one provider timed out.
+                # Change provider before calculating policies or spawning a
+                # new task attempt; no uncertain request is ever replayed.
+                if record['state']=='reconciling':
+                    for task_id in record['task_ids']:
+                        self.fallback_provider(record,task_id)
                 policies, checks = {}, {}
                 for task_id in record['task_ids']:
                     _, selected, protected = self.host.workflow.configuration(task_id)
@@ -168,6 +197,7 @@ class Coordinator:
                         # uncertain provider turn; it starts a new session.
                         if (completed['state']=='reconciling' and
                                 record['attempts'][tid] < record['max_attempts']):
+                            self.fallback_provider(record,tid)
                             self.host.workflow.recover()
                             recovered=next(r for r in self.host.workflow.list() if r['id']==rid)
                             if recovered['state']!='reconciled':

@@ -168,6 +168,17 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1,len(self.recoveries))
         self.assertEqual('verified_candidate',self.host.coordinator.list()[0]['state'])
 
+    async def test_provider_timeout_falls_back_without_replaying_old_provider(self):
+        self.rows.append({'id':'run_old','task_id':'task_a','state':'reconciling',
+                          'provider':'opencode','reason':'OPENCODE_HTTP_TIMEOUT'})
+        record={'assignments':{'task_a':'opencode'},'agents':['codex','opencode','claude'],
+                'attempts':{'task_a':2}}
+        self.assertTrue(self.host.coordinator.fallback_provider(record,'task_a'))
+        self.assertEqual('codex',record['assignments']['task_a'])
+        self.assertEqual(0,record['attempts']['task_a'])
+        self.assertEqual('opencode',record['provider_fallbacks'][0]['from'])
+        self.assertEqual('codex',record['provider_fallbacks'][0]['to'])
+
     async def test_shutdown_cancels_children_before_releasing_reservations(self):
         self.task('task_a')
         self.task('task_b')
