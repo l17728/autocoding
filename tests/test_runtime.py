@@ -164,6 +164,25 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await runner.next_event(timeout=1)
         self.assertEqual("delivery_unknown", self.core.command(command)["state"])
 
+    async def test_close_is_idempotent_after_workflow_seals_runtime(self):
+        class Adapter:
+            def __init__(self):
+                self.closes = 0
+
+            async def close(self):
+                self.closes += 1
+                if self.closes > 1:
+                    raise RuntimeError('adapter closed twice')
+
+        adapter = Adapter()
+        runner = SessionRuntime(self.core, "session_a", adapter)
+        # This is the state deliberately established by Workflow before it
+        # snapshots and verifies a completed worktree.
+        runner.closed = True
+        runner._quarantined = True
+        await runner.close()
+        self.assertEqual(0, adapter.closes)
+
 
 if __name__ == "__main__":
     unittest.main()

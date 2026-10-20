@@ -11,14 +11,18 @@ from autocoding.host import Host
 from autocoding.cold_start import install
 
 
+def seed_count():
+    return len(json.loads((ROOT/'src'/'autocoding'/'data'/'cold-start.json').read_text(encoding='utf-8'))['items'])
+
+
 class ColdStartTests(unittest.IsolatedAsyncioTestCase):
     async def test_import_is_idempotent_source_bound_and_preserves_archive(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);host=Host(root,root/'state')
             try:
                 first=install(host.core)
-                self.assertEqual(18,first['imported'])
-                self.assertEqual(18,host.reflection.learning.page()['total'])
+                self.assertEqual(seed_count(),first['imported'])
+                self.assertEqual(seed_count(),host.reflection.learning.page()['total'])
                 self.assertEqual(12,len(host.reflection.references()))
                 records=host.reflection.records()
                 ids={e['event_id'] for e in host.core.events()}
@@ -28,8 +32,8 @@ class ColdStartTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(set(record['items'][0]['evidence_ids'])<=ids)
                 host.reflection.archive(records[0]['id'],True)
                 self.assertEqual(0,install(host.core)['imported'])
-                self.assertEqual(17,host.reflection.learning.page()['total'])
-                self.assertEqual(18,len(host.core.events()))
+                self.assertEqual(seed_count()-1,host.reflection.learning.page()['total'])
+                self.assertEqual(seed_count(),len(host.core.events()))
                 self.assertEqual('no_new_evidence',(await host.reflection.run())['state'])
             finally:
                 await host.close()
@@ -37,7 +41,7 @@ class ColdStartTests(unittest.IsolatedAsyncioTestCase):
     async def test_only_opted_in_hosts_get_seed_package(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);host=Host(root,root/'state',cold_start=True)
-            try:self.assertEqual(18,len(host.reflection.records()))
+            try:self.assertEqual(seed_count(),len(host.reflection.records()))
             finally:await host.close()
 
     async def test_seed_refresh_preserves_archive_and_is_idempotent(self):
@@ -58,7 +62,7 @@ class ColdStartTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(refreshed['archived'])
                 self.assertIn('递归迭代到问题收敛',refreshed['items'][0]['content'])
                 self.assertEqual(0,install(host.core)['updated'])
-                self.assertEqual(19,len(host.core.events()))
+                self.assertEqual(seed_count()+1,len(host.core.events()))
             finally:await host.close()
 
 

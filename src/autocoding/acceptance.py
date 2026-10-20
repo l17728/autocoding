@@ -1,6 +1,7 @@
 """Versioned Owner acceptance policy; legacy JSON is imported on first save."""
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 from .core import DomainError, digest, encoded
@@ -50,6 +51,37 @@ class Acceptance:
     def load(self):
         with self.core.connection() as conn:
             return self.read(conn)['config']
+
+    @staticmethod
+    def automatic_config():
+        script=Path(__file__).resolve().parents[2]/'tools'/'pm_auto_check.py'
+        return {'checks':{'pm_auto':[sys.executable,str(script)]},'protected_paths':[]}
+
+    def bootstrap(self, *, key):
+        """Install PM-owned verification and migrate unstarted legacy tasks."""
+        def action(conn):
+            current=self.read(conn)
+            try:
+                validated=self.validate(current['config'])
+            except DomainError:
+                validated=self.automatic_config()
+                self.validate(validated)
+                record=dict(revision=current['revision']+1,source='pm_auto',config=validated)
+                conn.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('owner_acceptance',encoded(record)))
+                self.core._event(conn,'PMAcceptanceBootstrapped','pm',revision=record['revision'])
+            migrated=[]
+            for task in conn.execute("SELECT id,acceptance FROM tasks WHERE state='todo'").fetchall():
+                prior=json.loads(task['acceptance'])
+                if prior==['pm_auto']:
+                    continue
+                conn.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',
+                             ('task_business_acceptance:'+task['id'],encoded(prior)))
+                conn.execute('UPDATE tasks SET acceptance=?,acceptance_hash=?,revision=revision+1 WHERE id=?',
+                             (encoded(['pm_auto']),digest(['pm_auto']),task['id']))
+                self.core._event(conn,'TaskVerificationAutomated','pm',task=task['id'],prior_acceptance_hash=digest(prior))
+                migrated.append(task['id'])
+            return {'config':validated,'migrated_task_ids':migrated}
+        return self.core._write('pm','bootstrap_acceptance',key,{'mode':'automatic'},action)
 
     def snapshot(self):
         with self.core.connection() as conn:

@@ -1,5 +1,6 @@
 """Single-project loopback API with bearer authentication and Origin checking."""
 import asyncio
+import base64
 import sqlite3
 from contextlib import asynccontextmanager
 import hashlib
@@ -7,6 +8,7 @@ import hmac
 import json
 from pathlib import Path
 import secrets
+import subprocess
 import time
 import uuid
 
@@ -16,7 +18,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from .core import DomainError
+from .core import DomainError, digest
+from .global_history import GlobalHistory
 from .operations import external_once
 from .providers import ProviderError
 from .transport import TransportError
@@ -165,8 +168,16 @@ class ProjectCreate(ProjectSettings):
     root: str = Field(min_length=1,max_length=2048)
     initialize_git: bool = False
 
+class ProjectDelete(Body):
+    confirmation: str = Field(min_length=1,max_length=100)
+
 class DirectoryInput(Body):
     root: str = Field(min_length=1,max_length=2048)
+
+
+class DesignDocumentInput(Body):
+    filename: str = Field(min_length=1, max_length=180)
+    content_base64: str = Field(min_length=1, max_length=900000)
 
 class ReviewSettings(Body):
     enabled: bool
@@ -198,6 +209,7 @@ class Tokens:
 
 def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, registry=None, child=False):
     tokens = Tokens(owner_token, host.project_id)
+    global_history = GlobalHistory(registry.default if registry else host)
     @asynccontextmanager
     async def lifespan(app):
         from .windows_disconnect import install
@@ -276,6 +288,19 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
                         return error('REQUEST_TOO_LARGE', 413)
                     chunks.append(chunk)
                 request._body = b''.join(chunks)
+                try:
+                    submitted=json.loads(request._body)
+                except (TypeError, ValueError):
+                    submitted={'unparseable': True}
+                # This is intentionally platform-wide. It preserves the Owner's
+                # inputs across projects so the PM can recognize recurring goals
+                # and wording; sensitive-looking fields are redacted at source.
+                # History ingestion is auxiliary.  Its idempotency namespace
+                # must include the submitted body so it cannot pre-empt the
+                # endpoint's own, deliberately stricter idempotency conflict.
+                history_key='input:'+host.project_id+':'+key+':'+digest({'path':request.url.path,'content':submitted})
+                global_history.record(key=history_key, project_id=host.project_id,
+                                      path=request.url.path, content=submitted, redactor=host.redactor)
         try:
             response = await call_next(request)
         except sqlite3.Error as exc:
@@ -298,6 +323,10 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
     prefix = '/api/v1/projects/{project_id}'
     guarded = [Depends(owner)]
 
+    @app.get('/api/v1/input-history')
+    async def input_history(q: str='', offset: int=0, limit: int=30):
+        return global_history.search(q, offset, limit)
+
     @app.get('/api/v1/projects')
     async def projects_list():
         return registry.list() if registry else [{'id':host.project_id,'name':host.root.name,'root':str(host.root)}]
@@ -305,7 +334,14 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
     @app.post('/api/v1/projects/inspect')
     async def project_inspect(body: DirectoryInput):
         from .projects import inspect_directory
-        return await asyncio.to_thread(inspect_directory,body.root)
+        info = await asyncio.to_thread(inspect_directory,body.root)
+        if registry:
+            candidate = str(Path(info['root']).resolve())
+            registered = next((record for record in registry.list()
+                               if str(Path(record['root']).resolve()) == candidate), None)
+            if registered:
+                info['registered_project'] = registered
+        return info
 
     @app.post('/api/v1/projects')
     async def project_create(body: ProjectCreate, request: Request):
@@ -313,6 +349,13 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
             raise DomainError('PROJECT_CATALOGUE_UNAVAILABLE')
         return await external_once(registry.core,'project_register',request.headers['idempotency-key'],body.model_dump(),
                                    lambda:registry.register(body.model_dump()))
+
+    @app.delete(prefix,dependencies=guarded)
+    async def project_delete(body: ProjectDelete, request: Request):
+        if not registry:
+            raise DomainError('PROJECT_CATALOGUE_UNAVAILABLE')
+        return await external_once(registry.core,'project_delete:'+host.project_id,request.headers['idempotency-key'],body.model_dump(),
+                                   lambda:registry.remove(host.project_id,body.confirmation))
 
     @app.get(prefix+'/settings',dependencies=guarded)
     async def project_settings():
@@ -328,6 +371,80 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
         return await external_once(registry.core,'project_settings:'+host.project_id,request.headers['idempotency-key'],body.model_dump(),
                                    lambda:registry.update(host.project_id,body.model_dump()))
 
+    @app.get(prefix+'/design-documents', dependencies=guarded)
+    async def design_documents():
+        directory = host.root / 'docs' / 'imported'
+        if not directory.is_dir():
+            return []
+        return [{'name': item.name, 'bytes': item.stat().st_size}
+                for item in sorted(directory.iterdir(), key=lambda item: item.name.casefold())
+                if item.is_file() and item.suffix.casefold() in {'.md', '.txt'}]
+
+    @app.post(prefix+'/design-documents', dependencies=guarded)
+    async def design_document_upload(body: DesignDocumentInput, request: Request):
+        suffix = Path(body.filename).suffix.casefold()
+        name = Path(body.filename).name
+        if name != body.filename or suffix not in {'.md', '.txt'}:
+            raise DomainError('INVALID_DESIGN_DOCUMENT')
+        try:
+            content = base64.b64decode(body.content_base64, validate=True)
+            content.decode('utf-8')
+        except (ValueError, UnicodeDecodeError):
+            raise DomainError('INVALID_DESIGN_DOCUMENT')
+        if not 1 <= len(content) <= 512 * 1024:
+            raise DomainError('INVALID_DESIGN_DOCUMENT')
+        directory = host.root / 'docs' / 'imported'
+        target = directory / name
+        async def write_document():
+            directory.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            added = subprocess.run(['git', 'add', '--', 'docs/imported/' + name], cwd=host.root,
+                                   capture_output=True, text=True, encoding='utf-8', errors='replace')
+            if added.returncode:
+                raise DomainError('DESIGN_DOCUMENT_STAGE_FAILED')
+            committed = subprocess.run(['git', '-c', 'user.name=Project Owner', '-c', 'user.email=owner@localhost',
+                                        'commit', '--only', '-m', 'docs: import design document ' + name,
+                                        '--', 'docs/imported/' + name], cwd=host.root,
+                                       capture_output=True, text=True, encoding='utf-8', errors='replace')
+            if committed.returncode:
+                raise DomainError('DESIGN_DOCUMENT_COMMIT_FAILED')
+            head = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=host.root, capture_output=True, text=True,
+                                  encoding='utf-8', errors='replace')
+            return {'name': name, 'bytes': len(content), 'commit': head.stdout.strip()}
+        return await external_once(host.core, 'design_document:'+host.project_id+':'+name,
+                                   request.headers['idempotency-key'], {'name': name, 'sha256': hashlib.sha256(content).hexdigest()},
+                                   write_document)
+
+    @app.delete(prefix+'/design-documents/{filename}', dependencies=guarded)
+    async def design_document_delete(filename: str, request: Request):
+        name = Path(filename).name
+        if name != filename or Path(name).suffix.casefold() not in {'.md', '.txt'}:
+            raise DomainError('INVALID_DESIGN_DOCUMENT')
+        directory = host.root / 'docs' / 'imported'
+        target = directory / name
+        if not target.is_file():
+            raise DomainError('NOT_FOUND')
+        async def delete_document():
+            relative='docs/imported/' + name
+            tracked = subprocess.run(['git', 'ls-files', '--error-unmatch', '--', relative], cwd=host.root,
+                                     capture_output=True, text=True, encoding='utf-8', errors='replace')
+            if tracked.returncode:
+                target.unlink()
+                return {'name': name, 'deleted': True}
+            removed = subprocess.run(['git', 'rm', '--', relative], cwd=host.root,
+                                     capture_output=True, text=True, encoding='utf-8', errors='replace')
+            if removed.returncode:
+                raise DomainError('DESIGN_DOCUMENT_DELETE_FAILED')
+            committed = subprocess.run(['git', '-c', 'user.name=Project Owner', '-c', 'user.email=owner@localhost',
+                                        'commit', '--only', '-m', 'docs: remove design document ' + name,
+                                        '--', relative], cwd=host.root,
+                                       capture_output=True, text=True, encoding='utf-8', errors='replace')
+            if committed.returncode:
+                raise DomainError('DESIGN_DOCUMENT_COMMIT_FAILED')
+            return {'name': name, 'deleted': True}
+        return await external_once(host.core, 'design_document_delete:'+host.project_id+':'+name,
+                                   request.headers['idempotency-key'], {'name': name}, delete_document)
+
     @app.get(prefix+'/acceptance',dependencies=guarded)
     async def acceptance_settings():
         from .acceptance import Acceptance
@@ -337,6 +454,12 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
     async def save_acceptance(body: AcceptanceInput, request: Request):
         from .acceptance import Acceptance
         return await asyncio.to_thread(Acceptance(host).save, body.fingerprint, body.config,
+                                       key=request.headers['idempotency-key'])
+
+    @app.post(prefix+'/acceptance/bootstrap',dependencies=guarded)
+    async def bootstrap_acceptance(request: Request):
+        from .acceptance import Acceptance
+        return await asyncio.to_thread(Acceptance(host).bootstrap,
                                        key=request.headers['idempotency-key'])
 
     @app.get(prefix+'/learning-evaluations', dependencies=guarded)
@@ -613,6 +736,9 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
     @app.post(prefix+'/pm/delegate',dependencies=guarded)
     async def pm_delegate(body: DelegateInput,request: Request):
         from .delegation import delegate
+        from .acceptance import Acceptance
+        await asyncio.to_thread(Acceptance(host).bootstrap,
+                                key='delegate-bootstrap:'+request.headers['idempotency-key'])
         return await external_once(host.core,'pm_delegate',request.headers['idempotency-key'],body.model_dump(),
             lambda:delegate(host,body.goal,body.acceptance,agent=body.agent,agents=body.agents,
                             max_concurrency=body.max_concurrency,max_attempts=body.max_attempts))
@@ -655,6 +781,9 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
 
     @app.post(prefix + '/tasks/{task_id}/runs', dependencies=guarded)
     async def run_task(task_id: str, body: RunInput, request: Request):
+        from .acceptance import Acceptance
+        await asyncio.to_thread(Acceptance(host).bootstrap,
+                                key='run-bootstrap:'+request.headers['idempotency-key'])
         return await external_once(host.core, 'task_run_start', request.headers['idempotency-key'],
             {'task_id':task_id, **body.model_dump()},
             lambda: host.workflow.start(task_id, base_sha=body.base_sha, max_seconds=body.max_seconds, agent=body.agent))
@@ -684,6 +813,9 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
 
     @app.post(prefix + '/batches', dependencies=guarded)
     async def batch(body: BatchInput, request: Request):
+        from .acceptance import Acceptance
+        await asyncio.to_thread(Acceptance(host).bootstrap,
+                                key='batch-bootstrap:'+request.headers['idempotency-key'])
         return await external_once(host.core,'batch_start',request.headers['idempotency-key'],body.model_dump(),
             lambda:host.coordinator.start(body.task_ids,max_attempts=body.max_attempts,agent=body.agent,
                                           agents=body.agents,max_concurrency=body.max_concurrency))

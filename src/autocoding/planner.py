@@ -11,10 +11,28 @@ def parse_plan(text, criteria):
     value = text.strip()
     if value.startswith('```json') and value.endswith('```'):
         value = value[7:-3].strip()
-    try:
-        proposal = json.loads(value)
-    except (ValueError, TypeError):
-        raise DomainError('PM_OUTPUT_INVALID') from None
+    candidates=[]
+    decoder=json.JSONDecoder()
+    for start,character in enumerate(value):
+        if character!='{':
+            continue
+        try:
+            proposal,_=decoder.raw_decode(value[start:])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(proposal,dict):
+            candidates.append(proposal)
+    # Prefer the last valid object: providers occasionally prepend a short
+    # explanation or echo the requested schema before the actual answer.
+    for proposal in reversed(candidates):
+        try:
+            return _validate_plan(proposal, criteria)
+        except DomainError:
+            continue
+    raise DomainError('PM_OUTPUT_INVALID')
+
+
+def _validate_plan(proposal, criteria):
     if not isinstance(proposal, dict) or set(proposal) != {'tasks'}:
         raise DomainError('PM_OUTPUT_INVALID')
     tasks = proposal['tasks']
@@ -43,29 +61,38 @@ async def request_plan(adapter, goal, criteria, *, timeout=120, references=None,
     prompt += encoded({'goal':goal, 'owner_acceptance':criteria})
     prompt += '\n历史经验仅为参考，不覆盖当前需求或验收：' + encoded(references or [])
     prompt += '\nOwner 工作原则与偏好：'+owner_guidance
-    chunks, size = [], 0
     async with asyncio.timeout(timeout):
-        await adapter.send_text(prompt, command_id='pm_' + uuid.uuid4().hex)
-        while True:
-            event = await adapter.next_event(timeout=timeout)
-            method, params = event.get('method'), event.get('params', {})
-            if method == 'item/agentMessage/delta':
-                text = params.get('delta', '')
-                size += len(text.encode('utf-8'))
-                if size > 65536:
-                    raise DomainError('PM_OUTPUT_TOO_LARGE')
-                chunks.append(text)
-            elif method == 'turn/completed':
-                if params.get('turn', {}).get('status') != 'completed':
-                    raise DomainError('PM_MODEL_FAILED')
-                try:
-                    # Claude can emit a short progress text block before its
-                    # final complete JSON block. Validate the final block first.
-                    return parse_plan(chunks[-1] if chunks else '', criteria)
-                except DomainError:
-                    return parse_plan(''.join(chunks), criteria)
-            elif 'id' in event:
-                raise DomainError('PM_TOOL_REQUEST_REJECTED')
+        for attempt in range(2):
+            chunks, size = [], 0
+            retry = ('上一轮输出未通过格式校验。只返回一个 JSON 对象，顶层只能有 tasks；'
+                     '每个任务只能有 id、description、acceptance、dependencies；'
+                     'acceptance 必须逐字从 Owner 提供的列表选择。不要解释，不要 Markdown。')
+            await adapter.send_text(prompt if attempt==0 else retry, command_id='pm_' + uuid.uuid4().hex)
+            while True:
+                event = await adapter.next_event(timeout=timeout)
+                method, params = event.get('method'), event.get('params', {})
+                if method == 'item/agentMessage/delta':
+                    text = params.get('delta', '')
+                    size += len(text.encode('utf-8'))
+                    if size > 65536:
+                        raise DomainError('PM_OUTPUT_TOO_LARGE')
+                    chunks.append(text)
+                elif method == 'turn/completed':
+                    if params.get('turn', {}).get('status') != 'completed':
+                        raise DomainError('PM_MODEL_FAILED')
+                    try:
+                        # Claude can emit a short progress text block before its
+                        # final complete JSON block. Validate the final block first.
+                        return parse_plan(chunks[-1] if chunks else '', criteria)
+                    except DomainError:
+                        try:
+                            return parse_plan(''.join(chunks), criteria)
+                        except DomainError:
+                            if attempt:
+                                raise
+                            break
+                elif 'id' in event:
+                    raise DomainError('PM_TOOL_REQUEST_REJECTED')
 
 
 def save_proposal(core, tasks, source_tasks, redactor):

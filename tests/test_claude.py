@@ -73,6 +73,13 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(TransportError, "RECONCILIATION_REQUIRED"):
             await runtime.send(command, "中文输入")
 
+    async def test_correlated_assistant_turn_is_an_ack_without_legacy_replay(self):
+        runtime = await self.runtime("no-replay")
+        command = self.enqueue('no-replay')
+        self.assertEqual('acknowledged',(await runtime.send(command,'中文输入'))['state'])
+        await self.finish(runtime,command)
+        self.assertEqual('completed',self.core.command(command)['state'])
+
     async def test_mismatched_replay_freezes(self):
         for mode in ["wrong-ack", "wrong-content"]:
             with self.subTest(mode=mode):

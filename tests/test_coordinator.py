@@ -22,10 +22,13 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.peak=0
         self.release=asyncio.Event()
         self.fail=None
+        self.reconcile=None
+        self.recoveries=[]
         self.cancelled=[]
         self.host.workflow.configuration=self.configuration
         self.host.workflow.list=lambda:self.rows
         self.host.workflow.start=self.start_run
+        self.host.workflow.recover=self.recover_runs
         self.git=patch('autocoding.coordinator.git',return_value='a'*40)
         self.git.start()
         self.addCleanup(self.git.stop)
@@ -42,6 +45,15 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
             task=dict(self.host.core._get(conn,'tasks',tid))
         return task,{'unit':[sys.executable,'test.py']},[]
 
+    def recover_runs(self):
+        self.recoveries.append(True)
+        for row in self.rows:
+            if row['state']=='reconciling':
+                row['state']='reconciled'
+                with self.host.core.connection() as conn:
+                    conn.execute('UPDATE tasks SET state=?,agent=NULL,lease_token=NULL,lease_until=NULL WHERE id=?',
+                        ('todo',row['task_id']))
+
     async def start_run(self,tid,*,base_sha,batch_id,agent):
         self.started.append((tid,agent,base_sha))
         row={'id':'run_'+str(len(self.rows)),'task_id':tid,'state':'running','head_sha':str(len(self.rows)+1)*40}
@@ -52,10 +64,11 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
             try:
                 await self.release.wait()
                 await asyncio.sleep(.03)
-                row['state']='rework_required' if tid==self.fail else 'done'
+                prior=sum(1 for item in self.rows if item['task_id']==tid)
+                row['state']='rework_required' if tid==self.fail else ('reconciling' if tid==self.reconcile and prior==1 else 'done')
                 with self.host.core.connection() as conn:
                     conn.execute('UPDATE tasks SET state=?,head_sha=? WHERE id=?',
-                        ('todo' if tid==self.fail else 'done',row['head_sha'],tid))
+                        ('blocked' if row['state']=='reconciling' else ('todo' if tid==self.fail else 'done'),row['head_sha'],tid))
             except asyncio.CancelledError:
                 self.cancelled.append(tid)
                 raise
@@ -144,6 +157,16 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2,len(a))
         first=next(r for r in self.rows if r['task_id']=='task_a')
         self.assertEqual(first['head_sha'],a[1][2])
+
+    async def test_reconciliation_creates_fresh_bounded_attempt(self):
+        self.task('task_a')
+        self.reconcile='task_a'
+        self.release.set()
+        await self.host.coordinator.start(['task_a'],max_attempts=2)
+        await self.until(lambda:self.host.coordinator.current is None)
+        self.assertEqual(2,len([row for row in self.started if row[0]=='task_a']))
+        self.assertEqual(1,len(self.recoveries))
+        self.assertEqual('verified_candidate',self.host.coordinator.list()[0]['state'])
 
     async def test_shutdown_cancels_children_before_releasing_reservations(self):
         self.task('task_a')

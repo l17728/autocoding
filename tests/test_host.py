@@ -108,10 +108,11 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import AsyncMock, patch
         from types import SimpleNamespace
         from autocoding.transport import TransportError
-        for attempts,closed,expected in [(0,False,1),(2,False,0),(0,True,0)]:
+        for attempts,closed,expected,code in [(0,False,1,'PROCESS_STREAM_CLOSED'),(0,False,1,'CLAUDE_ACK_TIMEOUT_DELIVERY_UNKNOWN'),
+                                              (2,False,0,'PROCESS_STREAM_CLOSED'),(0,True,0,'PROCESS_STREAM_CLOSED')]:
             self.host.metadata['s']={'restart_count':attempts}
             runtime=SimpleNamespace(closed=closed,close=AsyncMock(),
-                next_event=AsyncMock(side_effect=TransportError('PROCESS_STREAM_CLOSED')))
+                next_event=AsyncMock(side_effect=TransportError(code)))
             with patch.object(self.host,'_restart',new=AsyncMock()) as restart:
                 await self.host._consume('s',runtime)
                 await asyncio.gather(*list(self.host.tasks))

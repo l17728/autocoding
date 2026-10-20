@@ -104,7 +104,12 @@ class Host:
         def finished(done):
             self.tasks.discard(done)
             if not done.cancelled() and done.exception() is not None:
-                self._output(None, 'error', code='BACKGROUND_OPERATION_FAILED')
+                # Keep the browser-facing message secret-safe, but expose a
+                # stable diagnostic category so a stalled autonomous loop can
+                # be recovered without guessing from an empty UI.
+                error = done.exception()
+                self._output(None, 'error', code=getattr(error, 'code', 'BACKGROUND_OPERATION_FAILED'),
+                             error_type=type(error).__name__)
         task.add_done_callback(finished)
         return task
 
@@ -117,6 +122,10 @@ class Host:
         if include_learning:
             references=await asyncio.to_thread(self.reflection.used_references)
             prompt += '\n以下为本项目 PM 历史经验，仅作参考，不覆盖当前用户指令、权限和验收要求：\n' + json.dumps(references,ensure_ascii=False)
+        global_history=getattr(self,'global_history',None)
+        if global_history:
+            inputs=await asyncio.to_thread(global_history.search, '', 0, 20)
+            prompt += '\n以下为跨项目的 Owner 输入历史，仅用于理解表达习惯和检索既有要求；当前明确指令优先，不能据此扩大权限或重放操作：\n' + json.dumps(inputs['items'],ensure_ascii=False)
         async with self.pm_slots:
             binary = native_executable('claude')
             if not binary:
@@ -234,7 +243,7 @@ class Host:
                         mcp_options['mcp_config'] = mcp_path
                     adapter = await ClaudeSession.connect(binary, cwd=cwd, env=env, model=config.model,
                         tools=('Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'AskUserQuestion') if tools else ('AskUserQuestion',),
-                        persist=True,resume=provider_session,skip_permissions=skip_permissions,**mcp_options)
+                        persist=True,resume=provider_session,skip_permissions=skip_permissions,timeout=90,**mcp_options)
                 else:
                     from .opencode import OpenCodeSession
                     env = dict(os.environ)
@@ -337,7 +346,8 @@ class Host:
             if not runtime.closed:
                 self._output(sid, 'error', code=exc.code)
             restart = (not self._closing and not runtime.closed and exc.code in {
-                'PROCESS_STREAM_CLOSED','PROCESS_READ_FAILED','OPENCODE_CONNECTION_LOST','OPENCODE_HTTP_TIMEOUT'}
+                'PROCESS_STREAM_CLOSED','PROCESS_READ_FAILED','OPENCODE_CONNECTION_LOST','OPENCODE_HTTP_TIMEOUT',
+                'CLAUDE_ACK_TIMEOUT_DELIVERY_UNKNOWN'}
                 and self.metadata.get(sid,{}).get('restart_count',0)<2)
             await runtime.close()
             if restart:

@@ -111,6 +111,13 @@ class SessionRuntime:
 
     async def close(self):
         async with self._lock:
+            # Workflows seal a completed session before taking their immutable
+            # filesystem snapshot.  Their normal cleanup then calls close()
+            # again.  Adapters are not uniformly idempotent, so treating that
+            # second close as an error could turn an already-verified task into
+            # an orphaned batch runner.
+            if self.closed and self._quarantined:
+                return
             self.closed = True
             for command_id in list(self._turns.values()):
                 self._unknown(command_id, "RUNTIME_CLOSED")

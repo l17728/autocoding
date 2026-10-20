@@ -51,13 +51,29 @@ class Workflow:
 
     def recover(self):
         for record in self.list():
-            if record['state'] not in FINAL:
+            if record['state'] not in FINAL or record['state'] == 'reconciling':
                 with self.core.connection() as conn:
                     task = self.core._get(conn, 'tasks', record['task_id'])
                 if task['state'] == 'done' and task['head_sha'] == record.get('head_sha'):
                     self.save(record, 'done')
                 else:
-                    self.block(record, 'RUN_RESTART_RECONCILIATION_REQUIRED')
+                    # Never replay the ambiguous provider turn. Preserve it as
+                    # evidence, isolate its session, and let the coordinator
+                    # create a fresh attempt from the durable task checkpoint.
+                    with self.core.connection() as conn:
+                        conn.execute('BEGIN IMMEDIATE')
+                        current=self.core._get(conn,'tasks',record['task_id'])
+                        if current['state'] in {'leased','verifying','blocked'}:
+                            conn.execute("UPDATE tasks SET state='todo',revision=revision+1,agent=NULL,lease_token=NULL,"
+                                         "lease_until=NULL,head_sha=NULL,verification_id=NULL,reason=NULL WHERE id=?",
+                                         (record['task_id'],))
+                        if record.get('session_id'):
+                            conn.execute("UPDATE sessions SET state='closed',epoch=epoch+1,generation=generation+1 WHERE id=?",
+                                         (record['session_id'],))
+                        self.core._event(conn,'PMAutoRecoveredAttempt','pm',task=record['task_id'],
+                                         run_id=record['id'],reason='RESTART_NEW_ATTEMPT')
+                        conn.commit()
+                    self.save(record, 'reconciled', recovery_action='new_attempt',reason='RESTART_NEW_ATTEMPT')
 
     def configuration(self, task_id):
         try:

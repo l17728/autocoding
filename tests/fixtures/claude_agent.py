@@ -24,12 +24,13 @@ for line in sys.stdin:
     if mode == "early":
         send(result)
         time.sleep(.05)
-    replay = {**message, "isReplay": True}
-    if mode == "wrong-ack":
-        replay["uuid"] = "other"
-    if mode == "wrong-content":
-        replay["message"] = {"role": "user", "content": "other"}
-    send(replay)
+    if mode != "no-replay":
+        replay = {**message, "isReplay": True}
+        if mode == "wrong-ack":
+            replay["uuid"] = "other"
+        if mode == "wrong-content":
+            replay["message"] = {"role": "user", "content": "other"}
+        send(replay)
     if mode == "invalid-type":
         send({"type": [], "session_id": sid})
         continue

@@ -1,8 +1,22 @@
 {
-  "version": "2026-10-15.1",
+  "version": "2026-10-20.1",
   "repository_commit": "84a5c0a325a92a40b28bedeb03fe3989214885c1",
   "trust": "reference_only",
   "items": [
+    {
+      "id": "delegated_autonomy_loop",
+      "topic": "Delegated autonomous delivery loop",
+      "kind": "workflow",
+      "category": "principle",
+      "content": "In delegated mode, the Owner supplies goals, materials, boundaries, and business acceptance intent. PM owns planning, decomposition, verification policy, multi-agent scheduling, inspection, recovery, expert review, integration verification, learning, and closure. Do not ask the Owner for check commands, ordinary agent failures, or routine workflow choices. Exit the loop only after task completion plus independent and integration evidence, never after a single agent response or dispatch round. Pause only for model quota, persistent network/provider outage, irreversible-action approval, permission request, or irreducible business ambiguity. A pause must preserve the reason, checkpoint, PM recovery attempts, one Owner action, and resume condition.",
+      "template": "Recover from persisted task, dependency, run, verification, and review state. Continue all work PM can safely perform. If a pause is unavoidable, report the reason, saved checkpoint, recovery attempts, one Owner action, and the resume condition.",
+      "sources": [
+        {
+          "kind": "local_user_instruction",
+          "id": "2026-10-20-delegated-autonomy-loop"
+        }
+      ]
+    },
     {
       "id": "autonomy",
       "topic": "自主推进",

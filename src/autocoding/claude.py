@@ -105,6 +105,12 @@ class ClaudeSession:
                 or message.get("user_message_uuid") != self.turn_id
                 or message.get("user_message_uuids") != [self.turn_id]):
             raise TransportError("CLAUDE_TURN_MISMATCH")
+        # Recent Claude CLI versions can begin a correlated assistant/result
+        # turn without first emitting the legacy replayed user frame. A matched
+        # provider turn is an equally strong acceptance receipt; waiting only
+        # for that legacy frame produces a false delivery-unknown timeout.
+        if self._ack is not None and not self._ack.done():
+            self._ack.set_result(True)
 
     def _handle(self, message):
         kind = message.get("type")

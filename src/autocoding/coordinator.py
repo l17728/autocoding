@@ -10,6 +10,21 @@ from .workspaces import git
 FINAL = {'verified_candidate', 'rework_required', 'reconciling', 'failed'}
 
 
+def stop_details(reason):
+    """Translate a durable stop code into the Owner's actual next action."""
+    code = str(reason or 'BATCH_FAILED')
+    upper = code.upper()
+    if 'NETWORK' in upper or 'CONNECTION' in upper or 'TIMEOUT' in upper:
+        return {'stop_category':'external_network','owner_next_action':'PM 已保存检查点；请在网络或供应商恢复后选择继续。'}
+    if 'RATE' in upper or 'QUOTA' in upper or 'LIMIT' in upper:
+        return {'stop_category':'model_limit','owner_next_action':'PM 已保存检查点；请在模型额度恢复后选择继续。'}
+    if 'APPROVAL' in upper or 'QUESTION' in upper or 'PERMISSION' in upper:
+        return {'stop_category':'owner_decision','owner_next_action':'请在审批与问题区域完成该项明确请求；PM 将自动继续。'}
+    if 'RECONCILIATION' in upper:
+        return {'stop_category':'recovery','owner_next_action':'PM 正在保留旧证据并准备新的安全尝试；无需重复输入原任务。'}
+    return {'stop_category':'pm_recovery','owner_next_action':'PM 已记录失败原因和检查点，将自动诊断并创建新的安全尝试。'}
+
+
 class Coordinator:
     def __init__(self, host):
         self.host, self.core = host, host.core
@@ -31,8 +46,22 @@ class Coordinator:
 
     def recover(self):
         for record in self.list():
-            if record['state'] not in FINAL:
-                self.save(record,'reconciling',reason='BATCH_RESTART_RECONCILIATION_REQUIRED')
+            if record['state'] not in {'queued','running','paused','reconciling'}:
+                continue
+            try:
+                policies, checks = {}, {}
+                for task_id in record['task_ids']:
+                    _, selected, protected = self.host.workflow.configuration(task_id)
+                    checks.update(selected)
+                    policies[task_id]=digest({'checks':selected,'protected_paths':protected})
+                self.current=record['id']
+                self.reserved=dict.fromkeys(record['task_ids'],record['id'])
+                self.save(record,'queued',reason='BATCH_RESTART_RESUMED',active_tasks=[])
+                self.host._background(self._perform(record,policies,checks))
+            except Exception as exc:
+                self.current, self.reserved = None, {}
+                reason=getattr(exc,'code','BATCH_RECOVERY_RECONCILIATION_REQUIRED')
+                self.save(record,'reconciling',reason=reason,**stop_details(reason))
 
     async def start(self, task_ids, *, max_attempts=2, agent='claude', agents=None, max_concurrency=1):
         agents = agents if agents is not None else [agent]
@@ -132,7 +161,19 @@ class Coordinator:
                         else:
                             retry_heads[tid]=completed['head_sha']
                     elif completed['state']!='done':
-                        stopped=('reconciling',completed.get('reason','RUN_RECONCILIATION_REQUIRED'))
+                        # A provider timeout or a crashed runner has already
+                        # been sealed as evidence by Workflow.  Retire that
+                        # attempt and make a fresh one within the batch's
+                        # configured retry budget.  This never resends the
+                        # uncertain provider turn; it starts a new session.
+                        if (completed['state']=='reconciling' and
+                                record['attempts'][tid] < record['max_attempts']):
+                            self.host.workflow.recover()
+                            recovered=next(r for r in self.host.workflow.list() if r['id']==rid)
+                            if recovered['state']!='reconciled':
+                                stopped=('reconciling',completed.get('reason','RUN_RECONCILIATION_REQUIRED'))
+                        else:
+                            stopped=('reconciling',completed.get('reason','RUN_RECONCILIATION_REQUIRED'))
             self.save(record,'integrating',active_tasks=[])
             # A final incremental batch must integrate earlier verified task
             # heads as well. Do not execute any task outside the selected batch.
@@ -182,10 +223,12 @@ class Coordinator:
                 except Exception:
                     self.save(record,record['state'],closure_state='failed',closure_error='PROJECT_CLOSURE_FAILED')
         except asyncio.CancelledError:
-            self.save(record,'reconciling',reason='BATCH_CANCELLED_RECONCILIATION_REQUIRED')
+            reason='BATCH_CANCELLED_RECONCILIATION_REQUIRED'
+            self.save(record,'reconciling',reason=reason,**stop_details(reason))
             raise
         except Exception as exc:
-            self.save(record,'failed',reason=getattr(exc,'code','BATCH_FAILED'))
+            reason=getattr(exc,'code','BATCH_FAILED')
+            self.save(record,'failed',reason=reason,**stop_details(reason))
         finally:
             for _,work in running.values():
                 if not work.done():

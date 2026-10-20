@@ -28,9 +28,11 @@ def recover(host):
 async def delegate(host,goal,criteria,*,agent='codex',agents=None,max_concurrency=1,max_attempts=2):
     if host.paused:raise DomainError('PROJECT_PAUSED')
     if host.coordinator.current is not None:raise DomainError('BATCH_ACTIVE')
-    config=Acceptance.validate(Acceptance(host).load())
-    if not criteria or any(name not in config['checks'] for name in criteria):
-        raise DomainError('DELEGATION_REQUIRES_REGISTERED_CHECKS')
+    # Owners describe product outcomes. PM owns the executable verification
+    # policy and maps every planned task to its maintained automatic check.
+    Acceptance(host).bootstrap(key='delegate-policy:'+uuid.uuid4().hex)
+    if not criteria or any(not isinstance(item,str) or not item.strip() for item in criteria):
+        raise DomainError('ACCEPTANCE_REQUIRED')
     if agent not in {'codex','claude','opencode'} or (agents is not None and (
             not agents or len(agents)>3 or len(set(agents))!=len(agents)
             or any(a not in {'codex','claude','opencode'} for a in agents))):
@@ -48,9 +50,10 @@ async def delegate(host,goal,criteria,*,agent='codex',agents=None,max_concurrenc
             conn.commit()
     save('planning')
     try:
-        proposal=await host.propose(goal,criteria)
+        planning_goal=goal+'\n\n业务验收标准（PM 必须在任务说明中落实并在复审中逐项核对）：\n'+ '\n'.join('- '+item for item in criteria)
+        proposal=await host.propose(planning_goal,['pm_auto'])
         save('planned',proposal_id=proposal['id'])
-        if {c for task in proposal['tasks'] for c in task['acceptance']}!=set(criteria):
+        if {c for task in proposal['tasks'] for c in task['acceptance']}!={'pm_auto'}:
             raise DomainError('DELEGATION_ACCEPTANCE_GAP')
         if host.paused:raise DomainError('PROJECT_PAUSED')
         adopted=adopt(host.core,proposal['id'],key=record['id'])

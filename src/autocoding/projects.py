@@ -4,7 +4,11 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import stat
+import subprocess
 from .core import DomainError, digest, encoded
+from .global_history import GlobalHistory
 from .host import Host
 from .workspaces import git
 
@@ -39,6 +43,8 @@ class Projects:
         self.core=default.core
         self.hosts={default.project_id:default}
         self.apps={}
+        self.global_history=GlobalHistory(default)
+        default.global_history=self.global_history
         self.lock=asyncio.Lock()
         self.pm_slots=asyncio.Semaphore(2)
         default.pm_slots=self.pm_slots
@@ -91,6 +97,7 @@ class Projects:
                 raise DomainError('PROJECT_DIRECTORY_UNAVAILABLE')
             host=Host(root,self.default.storage/'projects'/pid,config=self.default.config,cold_start=self.default.cold_start)
             host.pm_slots=self.pm_slots
+            host.global_history=self.global_history
             host.recover()
             self.hosts[pid]=host
             if self.started:
@@ -147,6 +154,64 @@ class Projects:
                 conn.execute('UPDATE metadata SET value=? WHERE key=?',(encoded(record),'project:'+pid))
             self.host(pid)
             return record
+
+    async def remove(self, pid, confirmation):
+        async with self.lock:
+            record=self.get(pid)
+            if pid==self.default.project_id or confirmation!=record['name']:
+                raise DomainError('PROJECT_DELETE_FORBIDDEN')
+            root=Path(record['root']).resolve()
+            if root==root.parent or not root.is_dir():
+                raise DomainError('PROJECT_DIRECTORY_UNAVAILABLE')
+            host=self.hosts.get(pid)
+            if host and (host.core.snapshot().get('live_ids') or any(t['state'] in {'leased','verifying'} for t in host.core.snapshot()['tasks'])):
+                raise DomainError('PROJECT_DELETE_ACTIVE')
+            if host:
+                try:
+                    await asyncio.wait_for(host.close(), timeout=15)
+                except TimeoutError:
+                    raise DomainError('PROJECT_DELETE_SHUTDOWN_TIMEOUT') from None
+            await asyncio.to_thread(self._remove_directory, root, pid)
+            with self.core.connection() as conn:
+                conn.execute('DELETE FROM metadata WHERE key=?',('project:'+pid,))
+            self.hosts.pop(pid,None);self.apps.pop(pid,None)
+            return {'id':pid,'deleted':True}
+
+    def _remove_directory(self, root, pid):
+        """Remove a stopped project and only its platform-owned Git worktrees."""
+        owned_workspace_root=(self.default.storage/'projects'/pid).resolve()
+        listing=subprocess.run(['git','-C',str(root),'worktree','list','--porcelain'],capture_output=True,text=True,
+                               encoding='utf-8',errors='replace')
+        if listing.returncode:
+            raise DomainError('PROJECT_DELETE_GIT_WORKTREE_CHECK_FAILED')
+        linked=[]
+        for line in listing.stdout.splitlines():
+            if line.startswith('worktree '):
+                candidate=Path(line.removeprefix('worktree ')).resolve()
+                if candidate != root:
+                    if owned_workspace_root not in candidate.parents:
+                        raise DomainError('PROJECT_DELETE_EXTERNAL_WORKTREE')
+                    linked.append(candidate)
+        for workspace in linked:
+            removed=subprocess.run(['git','-C',str(root),'worktree','remove','--force',str(workspace)],capture_output=True,text=True,
+                                   encoding='utf-8',errors='replace')
+            if removed.returncode:
+                raise DomainError('PROJECT_DELETE_WORKTREE_CLEANUP_FAILED')
+        subprocess.run(['git','-C',str(root),'worktree','prune'],capture_output=True,text=True,encoding='utf-8',errors='replace')
+        try:
+            shutil.rmtree(root, onerror=self._clear_readonly_and_retry)
+        except OSError:
+            raise DomainError('PROJECT_DELETE_DIRECTORY_FAILED') from None
+        shutil.rmtree(self.default.storage/'projects'/pid,ignore_errors=True)
+
+    @staticmethod
+    def _clear_readonly_and_retry(operation, path, _exc_info):
+        """Git may mark loose objects read-only on Windows; clear that bit before retrying."""
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            operation(path)
+        except OSError:
+            raise
 
     async def close(self):
         await asyncio.gather(*(h.close() for h in self.hosts.values()))

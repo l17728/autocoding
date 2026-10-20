@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client';
 import './style.css';
 const TerminalPanel=lazy(()=>import('./TerminalPanel').then(module=>({default:module.TerminalPanel})));
 import {ProjectPanel} from './ProjectPanel';
+import {GlobalInputHistory} from './GlobalInputHistory';
 import {ReflectionPanel} from './ReflectionPanel';
 import {CoveragePanel} from './CoveragePanel';
 import {ExpertPanel} from './ExpertPanel';
@@ -17,7 +18,7 @@ type Session = {id:string; agent:string; state:string; owner:string; epoch:numbe
 type Task = {id:string; description:string; state:string; attempt:number; reason?:string};
 type Run = {id:string; task_id:string; state:string; phase?:string; head_sha?:string; reason?:string; artifact_sha256?:string};
 type AgentQuestion = {id:string; state:string; answered_by?:string; reason?:string; answers?:string[][]; questions:{id:string;question:string;options:{label:string;description:string}[];multiple:boolean;custom:boolean;secret:boolean}[]};
-type Batch = {id:string;state:string;reason?:string;candidate_sha?:string;completion_inventory?:{outside_scope_remaining:string[]}};
+type Batch = {id:string;state:string;reason?:string;stop_category?:string;owner_next_action?:string;candidate_sha?:string;completion_inventory?:{outside_scope_remaining:string[]}};
 type Approval = {id:string; state:string; session_id:string; revision:number; operation_hash:string};
 type Snapshot = {tasks:Task[]; sessions:Session[]; approvals:Approval[]; latest_seq:number; paused:boolean; live_ids:string[]; runs:Run[]; questions:AgentQuestion[]; batches:Batch[];totals?:Record<string,number>;task_page?:{offset:number;next_offset:number|null;total:number};task_counts?:Record<string,number>;payloads_omitted?:number};
 type Output = {seq:number; session_id:string; type:string; text?:string; code?:string; state?:string};
@@ -50,9 +51,11 @@ function App() {
   const prefix = project ? `/api/v1/projects/${project.id}` : '';
 
   async function api(path:string, body?:unknown) {
-    const response = await fetch(path, {method:body === undefined ? 'GET':'POST', headers:{Authorization:`Bearer ${token}`,
+    const deleting=typeof body==='object'&&body!==null&&('_method' in body)&&(body as {_method?:string})._method==='DELETE';
+    const payload=deleting ? Object.fromEntries(Object.entries(body as Record<string,unknown>).filter(([key])=>key!=='_method')) : body;
+    const response = await fetch(path, {method:deleting ? 'DELETE' : body === undefined ? 'GET':'POST', headers:{Authorization:`Bearer ${token}`,
       ...(body === undefined ? {} : {'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()})},
-      body:body === undefined ? undefined:JSON.stringify(body)});
+      body:payload === undefined ? undefined:JSON.stringify(payload)});
     return readResponse(response);
   }
   async function refresh() {
@@ -101,12 +104,18 @@ function App() {
   const pending = snapshot.approvals.filter(a=>a.state==='pending');
   const batch=[...(snapshot.batches||[])].reverse()[0];
   const batchActive=!!batch&&!['verified_candidate','rework_required','reconciling','failed'].includes(batch.state);
-  return <div className="shell"><header><div className="brand"><span className="mark">A</span><div><strong>开发协作</strong><small>本地工作台 · {project.name}</small></div></div><div className="header-actions"><span className={'dot '+(!connected||snapshot.paused?'amber':'')}/><span>{!connected?'服务未连接或正在重连':snapshot.paused?'派发已暂停':'服务已连接'}</span><button disabled={!!busy} onClick={()=>action('pause',()=>api(prefix+'/pause',{paused:!snapshot.paused}))}>{snapshot.paused?'继续派发':'暂停派发'}</button></div></header><ProjectPanel project={project} api={api} select={selectProject} disabled={!!busy}/>
+  const criteriaItems=criteria.split('\n').map(item=>item.trim()).filter(Boolean);
+  // The owner supplies product outcomes. PM creates and maintains executable
+  // verification; the form must never ask the owner for command names.
+  const existingTodos=snapshot.tasks.filter(task=>task.state==='todo');
+  const hasNewDelegation=!!goal.trim()&&!!criteriaItems.length;
+  const delegationDisabled=!!busy||snapshot.paused||batchActive||(!hasNewDelegation&&!existingTodos.length);
+  return <div className="shell"><header><div className="brand"><span className="mark">A</span><div><strong>开发协作</strong><small>本地工作台 · {project.name}</small></div></div><div className="header-actions"><span className={'dot '+(!connected||snapshot.paused?'amber':'')}/><span>{!connected?'服务未连接或正在重连':snapshot.paused?'派发已暂停':'服务已连接'}</span><button disabled={!!busy} onClick={()=>action('pause',()=>api(prefix+'/pause',{paused:!snapshot.paused}))}>{snapshot.paused?'继续派发':'暂停派发'}</button></div></header><ProjectPanel project={project} api={api} select={selectProject} disabled={!!busy}/><GlobalInputHistory api={api} usePlan={(savedGoal,savedAcceptance)=>{setGoal(savedGoal);setCriteria(savedAcceptance.join('\n'))}}/>
     <div className="overview"><div><p className="eyebrow">PROJECT WORKSPACE</p><h1>让每一步执行都有据可查。</h1><p className="muted">{project.root}</p></div><div className="metrics"><div><b>{snapshot.task_counts?.done??snapshot.tasks.filter(t=>t.state==='done').length}<i> / {snapshot.totals?.tasks??snapshot.tasks.length}</i></b><span>任务已验证</span></div><div><b>{snapshot.live_ids.length}</b><span>在线会话</span></div><div><b>{pending.length}</b><span>本页等待审批</span></div></div></div>
     {error&&<div role="alert" className="banner"><span>{error}</span><button onClick={()=>setError('')}>关闭</button></div>}
     {!!snapshot.payloads_omitted&&<p role="status">有 {snapshot.payloads_omitted} 条内容超过显示预算，已冻结对应页面操作；完整记录仍保留在本地账本。</p>}
-    <details className="panel planning"><summary>与 PM 制定任务计划</summary><p className="muted">说明项目目标和验收条件。PM 生成草案，经你采用后加入任务清单。</p><form onSubmit={e=>{e.preventDefault();void action('planning',async()=>setProposal(await api(prefix+'/pm/proposals',{goal,acceptance:criteria.split('\n').filter(x=>x.trim())})))}}><div className="plan-inputs"><label>项目目标<textarea required value={goal} onChange={e=>setGoal(e.target.value)} placeholder="希望交付什么，范围和限制是什么？"/></label><label>项目验收条件（每行一条）<textarea required value={criteria} onChange={e=>setCriteria(e.target.value)} placeholder="如何判断工作完成？"/></label></div><button className="primary" disabled={!!busy||snapshot.paused}>{busy==='planning'?'PM 正在制定计划…':'生成任务草案'}</button></form>{proposal&&<div className="plan-draft"><h2>任务草案 · {proposal.tasks.length} 项</h2>{proposal.tasks.map(t=><article key={t.id}><strong>{t.description}</strong><p>{t.acceptance.join('；')}</p><small>{t.dependencies.length?`依赖 ${t.dependencies.length} 项任务`:'可独立开始'}</small></article>)}<button disabled={!!busy} className="primary" onClick={()=>action('adopt',async()=>{await api(prefix+'/pm/proposals/'+proposal.id+'/adopt',{});setProposal(null)})}>采用计划</button></div>}</details>
-    <div className="panel"><button disabled={!!busy||snapshot.paused||batchActive||!goal.trim()||!criteria.trim()} onClick={()=>void action('delegating',async()=>{await api(prefix+'/pm/delegate',{goal,acceptance:criteria.split('\n').map(x=>x.trim()).filter(Boolean),agent:executionAgent==='mixed'?'claude':executionAgent,agents:executionAgent==='mixed'?['codex','opencode','claude']:null,max_concurrency:executionAgent==='mixed'?3:1});setProposal(null)})}>{busy==='delegating'?'PM 正在规划并启动…':'委托 PM 规划并执行'}</button><p className="muted">使用上方目标、验收条件和下方执行 Agent，自动采用计划、按依赖开发、盘点复审并独立验收；每任务最多两次尝试。验收条件须填写已配置的检查名称。可随时暂停；未知投递停止对账，集成候选不会自动发布。</p></div>
+    <details className="panel planning"><summary>与 PM 制定任务计划</summary><p className="muted">说明项目目标和验收条件。PM 生成草案，经你采用后加入任务清单。</p><form onSubmit={e=>{e.preventDefault();void action('planning',async()=>setProposal(await api(prefix+'/pm/proposals',{goal,acceptance:criteria.split('\n').filter(x=>x.trim())})))}}><div className="plan-inputs"><label>项目目标<textarea required value={goal} onChange={e=>setGoal(e.target.value)} placeholder="希望交付什么，范围和限制是什么？"/></label><label>项目验收条件（每行一条）<textarea required value={criteria} onChange={e=>setCriteria(e.target.value)} placeholder="如何判断工作完成？"/></label></div><GlobalPlanSelect api={api} usePlan={(savedGoal,savedAcceptance)=>{setGoal(savedGoal);setCriteria(savedAcceptance.join('\n'))}}/><button className="primary" disabled={!!busy||snapshot.paused}>{busy==='planning'?'PM 正在制定计划…':'生成任务草案'}</button></form>{proposal&&<div className="plan-draft"><h2>任务草案 · {proposal.tasks.length} 项</h2>{proposal.tasks.map(t=><article key={t.id}><strong>{t.description}</strong><p>{t.acceptance.join('；')}</p><small>{t.dependencies.length?`依赖 ${t.dependencies.length} 项任务`:'可独立开始'}</small></article>)}<button disabled={!!busy} className="primary" onClick={()=>action('adopt',async()=>{await api(prefix+'/pm/proposals/'+proposal.id+'/adopt',{});setProposal(null)})}>采用计划</button></div>}</details>
+    <div className="panel"><button disabled={delegationDisabled} onClick={()=>void action('delegating',async()=>{if(hasNewDelegation){await api(prefix+'/pm/delegate',{goal,acceptance:criteriaItems,agent:executionAgent==='mixed'?'claude':executionAgent,agents:executionAgent==='mixed'?['codex','opencode','claude']:null,max_concurrency:executionAgent==='mixed'?3:1});setProposal(null)}else await api(prefix+'/batches',{agent:executionAgent==='mixed'?'claude':executionAgent,agents:executionAgent==='mixed'?['codex','opencode','claude']:null,max_concurrency:executionAgent==='mixed'?3:1,task_ids:existingTodos.map(task=>task.id)})})}>{busy==='delegating'?'PM 正在启动…':hasNewDelegation?'委托 PM 规划并执行':'委托 PM 执行现有待办'}</button><p className="muted">填写上方目标和业务验收标准时，PM 会重新规划后执行；未填写时，PM 直接执行当前 {existingTodos.length} 项待办。PM 自动维护独立验证、按依赖开发、盘点复审并验收；每任务最多两次尝试。</p>{hasNewDelegation&&<p className="muted">本次业务验收标准：{criteriaItems.join('、')}。</p>}</div>
     <label className="execution-agent">执行 Agent <select aria-label="执行 Agent" value={executionAgent} disabled={!!busy||batchActive} onChange={e=>setExecutionAgent(e.target.value)}><option value="claude">Claude</option><option value="codex">Codex</option><option value="opencode">OpenCode</option><option value="mixed">三 Agent 并发</option></select></label><BatchControls batch={batch} pageOnly={(snapshot.totals?.tasks??0)>snapshot.tasks.length} disabled={!!busy||snapshot.paused||batchActive||!snapshot.tasks.some(t=>t.state==='todo')} start={()=>action('batch',()=>api(prefix+'/batches',{agent:executionAgent==='mixed'?'claude':executionAgent,agents:executionAgent==='mixed'?['codex','opencode','claude']:null,max_concurrency:executionAgent==='mixed'?3:1,task_ids:snapshot.tasks.filter(t=>t.state==='todo').map(t=>t.id)}))}/><div className="workspace"><aside className="panel tasks"><div className="section-title"><h2>任务清单</h2><span>{snapshot.tasks.length}</span></div>{snapshot.tasks.length===0&&<p className="empty">从一项有明确验收条件的任务开始。</p>}{snapshot.tasks.map(t=>{
       const run=[...(snapshot.runs||[])].reverse().find(r=>r.task_id===t.id);
       const taskAgent=executionAgent==='mixed'?(['codex','opencode','claude'][snapshot.tasks.filter(x=>x.state==='todo').findIndex(x=>x.id===t.id)%3]||'claude'):executionAgent;
@@ -136,9 +145,15 @@ function App() {
   </div>;
 }
 
+function GlobalPlanSelect({api,usePlan}:{api:(path:string,body?:unknown)=>Promise<any>;usePlan:(goal:string,acceptance:string[])=>void}) {
+  const [plans,setPlans]=useState<{id:string;content:{goal:string;acceptance?:string[]}}[]>([]);
+  useEffect(()=>{let active=true;api('/api/v1/input-history?limit=50').then(result=>{if(active)setPlans(result.items.filter((item:any)=>typeof item.content?.goal==='string'))}).catch(()=>{});return()=>{active=false}},[]);
+  return <label>复用历史目标<select aria-label="复用历史目标" defaultValue="" onChange={event=>{const plan=plans.find(item=>item.id===event.target.value);if(plan)usePlan(plan.content.goal,Array.isArray(plan.content.acceptance)?plan.content.acceptance:[])}}><option value="">选择历史输入…</option>{plans.map(plan=><option key={plan.id} value={plan.id}>{plan.content.goal.slice(0,80)}</option>)}</select></label>
+}
+
 function BatchControls({batch,disabled,start,pageOnly=false}:{batch?:Batch;disabled:boolean;start:()=>unknown;pageOnly?:boolean}) {
   const status:Record<string,string>={queued:'计划已排队',running:'正在按依赖执行计划',paused:'计划已暂停',integrating:'正在验证集成结果',verified_candidate:'集成候选已验证，尚未发布',rework_required:'需要返工',reconciling:'需要对账',failed:'执行停止'};
-  return <div className="batch-controls"><button disabled={disabled} className="primary" onClick={start}>{pageOnly?'执行本页待办':'执行全部待办'}</button><span>{batch?status[batch.state]||batch.state:'按依赖推进，完成声明后盘点、复审并独立验证；默认最多尝试两次。'}</span>{batch?.candidate_sha&&<code>{batch.candidate_sha.slice(0,12)}</code>}{!!batch?.completion_inventory?.outside_scope_remaining.length&&<span>本批次之外仍有 {batch.completion_inventory.outside_scope_remaining.length} 项未完成。</span>}</div>;
+  return <div className="batch-controls"><button disabled={disabled} className="primary" onClick={start}>{pageOnly?'执行本页待办':'执行全部待办'}</button><span>{batch?status[batch.state]||batch.state:'按依赖推进，完成声明后盘点、复审并独立验证；默认最多尝试两次。'}</span>{batch?.reason&&<p role="alert">暂停原因：{batch.reason}。{batch.owner_next_action||'PM 将保存检查点并继续诊断。'}</p>}{batch?.candidate_sha&&<code>{batch.candidate_sha.slice(0,12)}</code>}{!!batch?.completion_inventory?.outside_scope_remaining.length&&<span>本批次之外仍有 {batch.completion_inventory.outside_scope_remaining.length} 项未完成。</span>}</div>;
 }
 
 function QuestionCard({question,disabled,answer}:{question:AgentQuestion;disabled:boolean;answer:(values:string[][])=>Promise<unknown>}) {

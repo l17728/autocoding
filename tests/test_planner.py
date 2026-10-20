@@ -38,6 +38,24 @@ class PlannerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(DomainError,'PM_OUTPUT_INVALID'):
                 parse_plan(json.dumps({'tasks':[task]}),['unit'])
 
+    async def test_plan_allows_provider_explanation_around_valid_json(self):
+        text='下面是计划：\n```json\n'+json.dumps({'tasks':[self.task]})+'\n```\n请确认。'
+        self.assertEqual([self.task],parse_plan(text,['unit']))
+
+    async def test_invalid_first_plan_gets_one_format_correction_retry(self):
+        valid=json.dumps({'tasks':[self.task]})
+        class Adapter:
+            def __init__(self): self.turn=0
+            async def send_text(self,prompt,**kwargs):
+                self.turn+=1
+                text='not a plan' if self.turn==1 else valid
+                self.events=iter([{'method':'item/agentMessage/delta','params':{'delta':text}},
+                                  {'method':'turn/completed','params':{'turn':{'status':'completed'}}}])
+            async def next_event(self,**kwargs): return next(self.events)
+        adapter=Adapter()
+        self.assertEqual([self.task],await request_plan(adapter,'Implement a feature',['unit']))
+        self.assertEqual(2,adapter.turn)
+
     async def test_changed_tasks_invalidate_proposal(self):
         proposal=save_proposal(self.core,[self.task],[],Redactor())
         self.core.create_task('task_b','New scope',['unit'],key='task')
