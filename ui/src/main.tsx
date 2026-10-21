@@ -58,11 +58,14 @@ function App() {
   async function api(path:string, body?:unknown) {
     const deleting=typeof body==='object'&&body!==null&&('_method' in body)&&(body as {_method?:string})._method==='DELETE';
     const payload=deleting ? Object.fromEntries(Object.entries(body as Record<string,unknown>).filter(([key])=>key!=='_method')) : body;
-    let response:Response;
-    try {response = await fetch(path, {method:deleting ? 'DELETE' : body === undefined ? 'GET':'POST', headers:{Authorization:`Bearer ${token}`,
+    const init={method:deleting ? 'DELETE' : body === undefined ? 'GET':'POST', headers:{Authorization:`Bearer ${token}`,
       ...(body === undefined ? {} : {'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()})},
-      body:payload === undefined ? undefined:JSON.stringify(payload)});
-    } catch {throw new Error('本机服务正在启动或自动重连；PM 已保留检查点，请稍候重试。')}
+      body:payload === undefined ? undefined:JSON.stringify(payload)};
+    let response:Response|undefined;
+    for(let attempt=0;attempt<4;attempt++){
+      try {response=await fetch(path,init);break} catch {if(attempt<3)await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)))}
+    }
+    if(!response)throw new Error('本机服务尚未恢复连接；PM 已保留检查点，将自动继续重连。');
     return readResponse(response);
   }
   async function refresh() {
