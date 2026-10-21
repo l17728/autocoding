@@ -80,6 +80,15 @@ class ClaudeControlTests(unittest.IsolatedAsyncioTestCase):
             self.adapter._handle({'type':'result','session_id':'fixture','subtype':'success','is_error':False})
         self.assertFalse(self.adapter._result_received)
 
+    async def test_tool_child_assistant_frame_is_progress_not_protocol_failure(self):
+        self.adapter.turn_id='turn_1'
+        self.adapter._ack=asyncio.get_running_loop().create_future()
+        self.adapter._ack.set_result(True)
+        self.adapter._handle({'type':'assistant','session_id':'fixture','parent_tool_use_id':'tool_1',
+            'message':{'role':'assistant','content':[{'type':'text','text':'private tool progress'}]}})
+        self.assertFalse(self.adapter._result_received)
+        self.assertTrue(self.adapter._events.empty())
+
     async def test_success_subtype_with_error_is_failure(self):
         self.adapter.turn_id='turn_1'
         self.adapter._handle({'type':'result','session_id':'fixture','subtype':'success','is_error':True,

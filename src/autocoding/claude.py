@@ -192,8 +192,13 @@ class ClaudeSession:
         if kind == "assistant":
             if message.get("error") is not None:
                 return  # CLI-generated API error text is not public model output.
+            # Current Claude CLI releases may emit a child assistant frame
+            # while a tool is streaming.  It has no independently
+            # deliverable turn result and must not terminate the parent task.
+            # The enclosing assistant frame already carries the tool start;
+            # final completion remains strictly correlated below.
             if message.get("parent_tool_use_id") is not None:
-                raise TransportError("CLAUDE_UNSUPPORTED_EVENT")
+                return
             body = message.get("message")
             if not isinstance(body, dict) or body.get("role") != "assistant" or not isinstance(body.get("content"), list):
                 raise TransportError("PROTOCOL_MALFORMED")
