@@ -144,10 +144,10 @@ class CodexSession:
                 receipt = self._mcp_receipts.pop(item.get('id'),None) or self._mcp_receipts.pop(
                     (item.get('server'),item.get('tool'),params.get('turnId')),None)
                 return {'method':'tool/result','params':{'threadId':self.thread_id,
-                    'toolUseId':receipt or item.get('id'), 'isError':item.get('status')=='failed'}}
+                    'toolUseId':receipt or item.get('id'), 'isError':item.get('status')=='failed','activity':str(item.get('tool') or 'MCP tool')[:160]}}
             if params.get('threadId')==self.thread_id and item.get('type') in {'commandExecution','fileChange'}:
                 return {'method':'tool/result','params':{'threadId':self.thread_id,'toolUseId':item.get('id'),
-                        'isError':item.get('status')=='failed'}}
+                        'isError':item.get('status')=='failed','activity':'command' if item.get('type')=='commandExecution' else 'file change'}}
         if event.get("method") == "turn/completed":
             params = event.get("params")
             if not isinstance(params, dict) or not isinstance(params.get("turn"), dict):

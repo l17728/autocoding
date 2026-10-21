@@ -330,7 +330,7 @@ class Host:
                         pending = self.deliveries.pop((sid, params.get('toolUseId')), None)
                         if pending:
                             self.approvals.finish_delivery(*pending, confirmed=True)
-                    self._output(sid, 'tool_result', is_error=params.get('isError', False))
+                    self._output(sid, 'tool_result', is_error=params.get('isError', False), activity=params.get('activity'))
                 elif method == 'turn/completed':
                     text = self.streams[sid].feed('', final=True)
                     if text:
