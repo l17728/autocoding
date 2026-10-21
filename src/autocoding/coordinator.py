@@ -220,7 +220,11 @@ class Coordinator:
             raise DomainError('UNSUPPORTED_AGENT')
         if self.host.paused:
             raise DomainError('PROJECT_PAUSED')
-        if self.current is not None:
+        # A durable reconciliation record remains PM-owned even after the
+        # process-local loop has stopped. Starting a second batch from a
+        # filtered task list would omit its active prerequisites and expose a
+        # dependency-selection error to the owner.
+        if self.current is not None or any(record.get('state') in {'queued','running','paused','reconciling'} for record in self.list()):
             raise DomainError('BATCH_ACTIVE')
         if (not isinstance(task_ids,list) or not 1 <= len(task_ids) <= 100 or len(set(task_ids)) != len(task_ids)
                 or type(max_attempts) is not int or not 1 <= max_attempts <= 3):

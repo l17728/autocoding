@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from autocoding.host import Host
+from autocoding.core import DomainError, encoded
 from closure_support import integration_evidence
 
 
@@ -178,6 +179,14 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0,record['attempts']['task_a'])
         self.assertEqual('opencode',record['provider_fallbacks'][0]['from'])
         self.assertEqual('codex',record['provider_fallbacks'][0]['to'])
+
+    async def test_reconciliation_batch_blocks_competing_filtered_batch(self):
+        self.task('task_a')
+        with self.host.core.connection() as conn:
+            conn.execute('INSERT INTO metadata VALUES (?,?)',('batch:existing',encoded({
+                'id':'existing','state':'reconciling','created_at':0,'task_ids':['other']})))
+        with self.assertRaisesRegex(DomainError,'BATCH_ACTIVE'):
+            await self.host.coordinator.start(['task_a'])
 
     async def test_generic_runner_timeout_uses_active_provider_for_fallback(self):
         self.rows.append({'id':'run_old','task_id':'task_a','state':'reconciling',
