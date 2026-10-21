@@ -55,7 +55,20 @@ class Coordinator:
     def mark_available(self, agent):
         record={'agent':agent,'state':'available','failures':0,'updated_at':self.core.clock()}
         self.save_health(record)
+        self.resume_after_health_recovery()
         return record
+
+    def resume_after_health_recovery(self):
+        # A successful probe closes the loop: a transient provider failure
+        # must not leave an otherwise autonomous batch awaiting another click.
+        if self.current is not None or self.host.paused:
+            return
+        for record in self.list():
+            reason=str(record.get('reason','')).upper()
+            transient=any(code in reason for code in ('TIMEOUT','NETWORK','CONNECTION','TRANSPORT','DELIVERY','START'))
+            if record.get('state')=='reconciling' and transient:
+                self.recover()
+                return
 
     async def probe_agent(self, agent):
         """Start a fresh disposable adapter session; never replay task input."""
