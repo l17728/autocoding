@@ -19,7 +19,7 @@ try {
         exit 0
     }
 
-    $expectedEntry = Join-Path $projectRoot 'tools\workbench.py'
+    $expectedEntry = Join-Path $projectRoot 'tools\workbench_supervisor.py'
     $commandLine = [string]$process.CommandLine
     if ($commandLine -notlike "*$expectedEntry*" -or $commandLine -notlike "*--port $($state.port)*") {
         throw "PID $($state.pid) 的命令行与本项目工作台不匹配；为保护其他程序，未停止它。"

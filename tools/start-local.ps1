@@ -8,6 +8,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $entry = Join-Path $projectRoot 'tools\workbench.py'
+$supervisor = Join-Path $projectRoot 'tools\workbench_supervisor.py'
 $ui = Join-Path $projectRoot 'ui\dist\index.html'
 $controlDirectory = Join-Path $projectRoot '.local\service-control'
 $stateFile = Join-Path $controlDirectory 'workbench.json'
@@ -31,6 +32,7 @@ function Get-ListeningOwner {
 
 if (-not (Test-Path -LiteralPath $python)) { throw "找不到项目虚拟环境 Python：$python" }
 if (-not (Test-Path -LiteralPath $entry)) { throw "找不到工作台入口：$entry" }
+if (-not (Test-Path -LiteralPath $supervisor)) { throw "找不到工作台监督器：$supervisor" }
 if (-not (Test-Path -LiteralPath $ui)) { throw "找不到已构建的前端：$ui。请在 ui 目录运行 npm.cmd run build。" }
 
 New-Item -ItemType Directory -Path $controlDirectory -Force | Out-Null
@@ -48,7 +50,7 @@ if (Test-Path -LiteralPath $stateFile) {
     Remove-Item -LiteralPath $stateFile -Force
 }
 
-$process = Start-Process -FilePath $python -ArgumentList @($entry, '--project', $projectRoot, '--port', "$Port") `
+$process = Start-Process -FilePath $python -ArgumentList @($supervisor, '--project', $projectRoot, '--port', "$Port") `
     -WorkingDirectory $projectRoot -RedirectStandardOutput $logFile -RedirectStandardError $errorFile `
     -WindowStyle Hidden -PassThru
 
