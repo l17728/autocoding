@@ -196,6 +196,14 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.host.coordinator.fallback_provider(record,'task_a'))
         self.assertEqual('codex',record['assignments']['task_a'])
 
+    async def test_generic_rpc_timeout_without_provider_name_falls_back(self):
+        self.rows.append({'id':'run_old','task_id':'task_a','state':'reconciling',
+                          'provider':'claude','reason':'RPC_TIMEOUT_DELIVERY_UNKNOWN'})
+        record={'assignments':{'task_a':'claude'},'agents':['claude','codex'],
+                'attempts':{'task_a':2}}
+        self.assertTrue(self.host.coordinator.fallback_provider(record,'task_a'))
+        self.assertEqual('codex',record['assignments']['task_a'])
+
     async def test_pm_owned_input_takeover_falls_back_but_human_owned_does_not(self):
         self.host.core.create_session('session_pm','claude',owner='human',key='session-pm')
         self.host.core.takeover('session_pm','pm',0,key='takeover-pm')

@@ -163,7 +163,11 @@ class Coordinator:
         # leaving the batch stranded awaiting a human restart.
         attributed=current.upper() in upper
         pm_takeover=upper.startswith('RUN_INPUT_TAKEN_OVER') and self.pm_owned_input_takeover(latest)
-        generic_runner_failure=(upper.startswith('RUN_TIMEOUT_') or upper.startswith('RUN_DELIVERY_') or pm_takeover)
+        # Some adapters report an acknowledgement timeout before they can
+        # attach a provider name (for example RPC_TIMEOUT_DELIVERY_UNKNOWN).
+        # It is still an uncertain old delivery, never a reason to strand an
+        # autonomous batch or replay the same session.
+        generic_runner_failure=(upper.startswith(('RUN_TIMEOUT_','RUN_DELIVERY_','RPC_TIMEOUT_','RPC_DELIVERY_')) or pm_takeover)
         if not (external_failure or pm_takeover) or not (attributed or generic_runner_failure):
             return False
         candidates=[agent for agent in record.get('agents',[]) if agent!=current]
