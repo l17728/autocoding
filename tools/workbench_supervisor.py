@@ -28,17 +28,22 @@ def main():
     args = parser.parse_args()
     root=args.project.resolve(); storage=root/'.local/workbench'; storage.mkdir(parents=True,exist_ok=True)
     token_file=storage/'owner-token.txt'; log=storage/'watchdog.jsonl'
-    worker=None; failures=0
+    worker=None; failures=0; started_at=0.0
     def note(event, **data):
         log.open('a',encoding='utf-8').write(json.dumps({'at':time.time(),'event':event,**data},ensure_ascii=False)+'\n')
     def start(reason):
-        nonlocal worker
+        nonlocal worker, started_at
         if worker and worker.poll() is None: worker.terminate(); worker.wait(timeout=8)
         worker=subprocess.Popen([sys.executable, str(root/'tools/workbench.py'),'--project',str(root),'--port',str(args.port)],cwd=root)
+        started_at=time.monotonic()
         note('worker_started',reason=reason,pid=worker.pid)
     start('supervisor_start')
     while True:
         time.sleep(3)
+        # Registry recovery can legitimately rebuild several project hosts.
+        # Do not mistake that bounded cold-start window for a crash.
+        if time.monotonic()-started_at < 45:
+            continue
         unhealthy=False; reason=''
         try:
             request(f'http://127.0.0.1:{args.port}/health')
