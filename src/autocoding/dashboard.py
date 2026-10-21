@@ -14,6 +14,31 @@ TABLES = {
 RECORDS = {'runs': 'run:', 'batches': 'batch:', 'questions': 'question:', 'closures': 'pm_closure:',
            'expert_reviews': 'expert_review:', 'evaluations': 'learning_eval:'}
 
+# The PM estimate is deliberately derived from durable task state rather than
+# model prose.  It is reproducible, refreshes after every state transition,
+# and never represents an unverified task as complete.
+PROGRESS_WEIGHT = {'done': 1.0, 'verifying': .85, 'leased': .50,
+                   'todo': 0.0, 'blocked': 0.0, 'cancelled': 0.0}
+
+
+def pm_progress(conn):
+    rows = list(conn.execute('SELECT state,acceptance FROM tasks'))
+    if not rows:
+        return {'percent': 0, 'completed_weight': 0.0, 'total_weight': 0.0,
+                'remaining_equivalent_tasks': 0.0, 'basis': '暂无任务'}
+    total = completed = 0.0
+    for row in rows:
+        try:
+            checks = json.loads(row['acceptance'])
+            weight = float(max(1, len(checks))) if isinstance(checks, list) else 1.0
+        except (TypeError, ValueError):
+            weight = 1.0
+        total += weight
+        completed += weight * PROGRESS_WEIGHT.get(row['state'], 0.0)
+    return {'percent': round(100 * completed / total), 'completed_weight': round(completed, 2),
+            'total_weight': round(total, 2), 'remaining_equivalent_tasks': round(total - completed, 1),
+            'basis': 'PM 按验收项权重与任务状态估算；仅独立验证通过计为 100%。'}
+
 
 def omitted(item):
     result = {k: item[k] for k in ('id', 'seq', 'task_id', 'session_id', 'revision', 'attempt', 'agent', 'head_sha') if k in item}
@@ -84,6 +109,7 @@ class Dashboard:
             result['totals'] = {kind: p['total'] for kind, p in pages.items()}
             result['task_page'] = {k: v for k, v in pages['tasks'].items() if k != 'items'}
             result['task_counts'] = {r['state']: r['n'] for r in conn.execute('SELECT state,COUNT(*) n FROM tasks GROUP BY state')}
+            result['pm_progress'] = pm_progress(conn)
             result['agent_health'] = [json.loads(r['value']) for r in conn.execute("SELECT value FROM metadata WHERE key GLOB 'agent_health:*' ORDER BY key")]
             # Link a task run to its actual PM instruction and public runtime
             # events so the owner need not infer work from an idle session card.

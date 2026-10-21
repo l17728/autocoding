@@ -47,3 +47,14 @@ class DashboardTests(unittest.TestCase):
             self.dashboard.history('unknown')
         with self.assertRaises(DomainError):
             self.dashboard.history('runs',-1)
+
+    def test_pm_progress_is_weighted_and_only_counts_verified_tasks_as_complete(self):
+        self.host.core.create_task('task_done','Verified',['unit'],key='done')
+        self.host.core.create_task('task_running','Active',['unit'],key='running')
+        with self.host.core.connection() as conn:
+            conn.execute("UPDATE tasks SET state='done' WHERE id='task_done'")
+            conn.execute("UPDATE tasks SET state='leased' WHERE id='task_running'")
+        progress=self.dashboard.snapshot()['pm_progress']
+        self.assertEqual(75,progress['percent'])
+        self.assertEqual(1.5,progress['completed_weight'])
+        self.assertEqual(0.5,progress['remaining_equivalent_tasks'])
