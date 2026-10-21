@@ -83,6 +83,7 @@ class Dashboard:
             result['totals'] = {kind: p['total'] for kind, p in pages.items()}
             result['task_page'] = {k: v for k, v in pages['tasks'].items() if k != 'items'}
             result['task_counts'] = {r['state']: r['n'] for r in conn.execute('SELECT state,COUNT(*) n FROM tasks GROUP BY state')}
+            result['agent_health'] = [json.loads(r['value']) for r in conn.execute("SELECT value FROM metadata WHERE key GLOB 'agent_health:*' ORDER BY key")]
         visible = {s['id'] for s in result['sessions']}
         result.update(metadata={sid: data for sid, data in self.host.metadata.items() if sid in visible},
                       paused=self.host.paused, live_ids=[sid for sid, runtime in self.host.runtimes.items() if not runtime._quarantined])

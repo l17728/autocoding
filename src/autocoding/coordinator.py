@@ -30,6 +30,63 @@ class Coordinator:
         self.host, self.core = host, host.core
         self.current = None
         self.reserved = {}
+        self.health_task = None
+
+    def health(self, agent):
+        with self.core.connection() as conn:
+            row=conn.execute('SELECT value FROM metadata WHERE key=?',('agent_health:'+agent,)).fetchone()
+        return json.loads(row['value']) if row else {'agent':agent,'state':'available','failures':0}
+
+    def save_health(self, record):
+        with self.core.connection() as conn:
+            conn.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('agent_health:'+record['agent'],encoded(record)))
+            self.core._event(conn,'AgentHealthChanged','pm',agent=record['agent'],state=record['state'],failures=record['failures'])
+
+    def mark_unavailable(self, agent, reason):
+        prior=self.health(agent)
+        failures=min(int(prior.get('failures',0))+1,12)
+        record={'agent':agent,'state':'unavailable','failures':failures,'reason':str(reason)[:200],
+                'updated_at':self.core.clock(),'next_probe_at':self.core.clock()+min(300,5*(2**min(failures-1,6)))}
+        self.save_health(record)
+        if self.health_task is None or self.health_task.done():
+            self.health_task=self.host._background(self.monitor_health())
+        return record
+
+    def mark_available(self, agent):
+        record={'agent':agent,'state':'available','failures':0,'updated_at':self.core.clock()}
+        self.save_health(record)
+        return record
+
+    async def probe_agent(self, agent):
+        """Start a fresh disposable adapter session; never replay task input."""
+        session=None
+        try:
+            session=await self.host.start(agent,tools=False)
+            return True
+        except Exception as exc:
+            self.mark_unavailable(agent,getattr(exc,'code','AGENT_PROBE_FAILED'))
+            return False
+        finally:
+            if session:
+                runtime=self.host.runtimes.pop(session['session_id'],None)
+                if runtime:
+                    await runtime.close()
+                with self.core.connection() as conn:
+                    conn.execute("UPDATE sessions SET state='closed' WHERE id=?",(session['session_id'],))
+
+    async def monitor_health(self):
+        while not self.host._closing:
+            unhealthy=[self.health(agent) for agent in ('claude','opencode','codex') if self.health(agent).get('state')=='unavailable']
+            if not unhealthy:
+                return
+            now=self.core.clock()
+            due=[row for row in unhealthy if row.get('next_probe_at',0)<=now]
+            if not due:
+                await asyncio.sleep(min(5,max(.2,min(row['next_probe_at'] for row in unhealthy)-now)))
+                continue
+            for row in due:
+                if await self.probe_agent(row['agent']):
+                    self.mark_available(row['agent'])
 
     def list(self):
         with self.core.connection() as conn:
@@ -99,7 +156,11 @@ class Coordinator:
         candidates=[agent for agent in record.get('agents',[]) if agent!=current]
         if not candidates:
             return False
-        replacement=candidates[0]
+        # Prefer an agent that has not recently failed. If every candidate is
+        # unhealthy, still make one bounded fresh attempt while the monitor
+        # continues reconnecting in the background.
+        replacement=next((agent for agent in candidates if self.health(agent).get('state')=='available'),candidates[0])
+        self.mark_unavailable(current,reason)
         record['assignments'][task_id]=replacement
         record.setdefault('provider_fallbacks',[]).append({
             'task_id':task_id,'from':current,'to':replacement,
@@ -108,6 +169,11 @@ class Coordinator:
         return True
 
     def recover(self):
+        # Health state is durable. Resume probes after a service restart even
+        # when no new task fails in this process.
+        if any(self.health(agent).get('state')=='unavailable' for agent in ('claude','opencode','codex')):
+            if self.health_task is None or self.health_task.done():
+                self.health_task=self.host._background(self.monitor_health())
         for record in self.list():
             if record['state'] not in {'queued','running','paused','reconciling'}:
                 continue
