@@ -84,6 +84,21 @@ class Dashboard:
             result['task_page'] = {k: v for k, v in pages['tasks'].items() if k != 'items'}
             result['task_counts'] = {r['state']: r['n'] for r in conn.execute('SELECT state,COUNT(*) n FROM tasks GROUP BY state')}
             result['agent_health'] = [json.loads(r['value']) for r in conn.execute("SELECT value FROM metadata WHERE key GLOB 'agent_health:*' ORDER BY key")]
+            # Link a task run to its actual PM instruction and public runtime
+            # events so the owner need not infer work from an idle session card.
+            for run in result['runs']:
+                sid=run.get('session_id')
+                if not sid:
+                    continue
+                context=conn.execute('SELECT value FROM metadata WHERE key=?',('session_context:'+sid,)).fetchone()
+                instruction=''
+                if context:
+                    try:
+                        instruction=str(json.loads(context['value']).get('initial',''))[:12000]
+                    except (TypeError, ValueError):
+                        pass
+                run['conversation']={'instruction':instruction,
+                    'events':[event for event in self.host.output if event.get('session_id')==sid][-20:]}
         visible = {s['id'] for s in result['sessions']}
         result.update(metadata={sid: data for sid, data in self.host.metadata.items() if sid in visible},
                       paused=self.host.paused, live_ids=[sid for sid, runtime in self.host.runtimes.items() if not runtime._quarantined])
