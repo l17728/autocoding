@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -27,6 +28,9 @@ def main():
     parser.add_argument('--port', type=int, default=8765)
     args = parser.parse_args()
     root=args.project.resolve(); storage=root/'.local/workbench'; storage.mkdir(parents=True,exist_ok=True)
+    lock=storage/'watchdog.lock'
+    try: lock_handle=os.open(lock, os.O_CREAT|os.O_EXCL|os.O_WRONLY)
+    except FileExistsError: raise SystemExit('workbench supervisor already running')
     entry=Path(__file__).with_name('workbench.py')
     token_file=storage/'owner-token.txt'; log=storage/'watchdog.jsonl'
     worker=None; failures=0; started_at=0.0
@@ -50,7 +54,13 @@ def main():
             continue
         unhealthy=False; reason=''
         try:
+            if worker.poll() is not None:
+                raise RuntimeError('WORKER_EXITED')
             request(f'http://127.0.0.1:{args.port}/health')
+        except Exception as exc:
+            unhealthy=True; reason='HTTP_UNRESPONSIVE:'+type(exc).__name__
+        if not unhealthy:
+          try:
             token=token_file.read_text(encoding='utf-8').strip()
             projects=request(f'http://127.0.0.1:{args.port}/api/v1/projects',token)
             for project in projects:
@@ -61,8 +71,8 @@ def main():
                 stalled=(batch.get('state') == 'running' and not batch.get('active_tasks')
                          and snap.get('task_counts',{}).get('leased',0)>0)
                 if stalled: unhealthy=True; reason='BATCH_STALLED:'+project['id']; break
-        except Exception as exc:
-            unhealthy=True; reason='HTTP_UNRESPONSIVE:'+type(exc).__name__
+          except Exception as exc:
+            note('business_probe_failed',reason=type(exc).__name__)
         failures=failures+1 if unhealthy else 0
         if unhealthy: note('unhealthy',reason=reason,consecutive=failures)
         if failures>=3:

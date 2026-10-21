@@ -62,7 +62,7 @@ $state = [ordered]@{
 }
 $state | ConvertTo-Json | Set-Content -LiteralPath $stateFile -Encoding UTF8
 
-for ($attempt = 0; $attempt -lt 30; $attempt++) {
+for ($attempt = 0; $attempt -lt 60; $attempt++) {
     if ($process.HasExited) {
         Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
         throw "工作台启动后退出。请查看：$errorFile"
@@ -74,7 +74,7 @@ for ($attempt = 0; $attempt -lt 30; $attempt++) {
     Start-Sleep -Seconds 1
 }
 
-if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+if (-not $process.HasExited) { & "$env:SystemRoot\System32\taskkill.exe" /PID $process.Id /T /F | Out-Null }
 Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
-throw "工作台未在 30 秒内就绪。请查看：$errorFile"
+throw "工作台未在 60 秒内就绪。请查看：$errorFile"
 
