@@ -17,6 +17,7 @@ from .redaction import Redactor
 from .runtime import SessionRuntime
 from .transport import TransportError
 from .workspaces import Workspaces
+from .textcodec import readable_text
 
 
 class Host:
@@ -115,6 +116,10 @@ class Host:
 
     def _output(self, sid, kind, **data):
         self.output_seq += 1
+        if 'detail' in data:
+            data['detail']=readable_text(data['detail'])
+        if 'text' in data:
+            data['text']=readable_text(data['text'])
         event=self.redactor.value(dict(seq=self.output_seq, session_id=sid, type=kind, **data))
         self.output.append(event)
         # Runtime output is evidence for the task, not a disposable console.

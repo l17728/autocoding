@@ -2,6 +2,7 @@
 import json
 
 from .core import DomainError, encoded
+from .textcodec import readable_text
 
 TABLES = {
     'tasks': ('tasks', 'id,description,state,revision,attempt,agent,head_sha,reason', 'id'),
@@ -105,6 +106,11 @@ class Dashboard:
                 live=[event for event in self.host.output if event.get('session_id')==sid]
                 seen={(event.get('seq'),event.get('type'),event.get('text'),event.get('code')) for event in events}
                 events.extend(event for event in live if (event.get('seq'),event.get('type'),event.get('text'),event.get('code')) not in seen)
+                for event in events:
+                    if isinstance(event,dict) and 'detail' in event:
+                        event['detail']=readable_text(event['detail'])
+                    if isinstance(event,dict) and 'text' in event:
+                        event['text']=readable_text(event['text'])
                 run['conversation']={'instruction':instruction,'events':events[-200:]}
         visible = {s['id'] for s in result['sessions']}
         result.update(metadata={sid: data for sid, data in self.host.metadata.items() if sid in visible},
