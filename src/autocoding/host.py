@@ -120,14 +120,19 @@ class Host:
         # Runtime output is evidence for the task, not a disposable console.
         # Keep a bounded redacted transcript across a service restart.
         if sid:
-            with self.core.connection() as conn:
-                row=conn.execute('SELECT value FROM metadata WHERE key=?',('session_output:'+sid,)).fetchone()
-                try:
-                    transcript=json.loads(row['value']) if row else []
-                except (TypeError, ValueError):
-                    transcript=[]
-                transcript.append(event)
-                conn.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('session_output:'+sid,encoded(transcript[-200:])))
+            # Transcript persistence is observability, never a reason to
+            # terminate a live provider stream during a brief SQLite lock.
+            try:
+                with self.core.connection() as conn:
+                    row=conn.execute('SELECT value FROM metadata WHERE key=?',('session_output:'+sid,)).fetchone()
+                    try:
+                        transcript=json.loads(row['value']) if row else []
+                    except (TypeError, ValueError):
+                        transcript=[]
+                    transcript.append(event)
+                    conn.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('session_output:'+sid,encoded(transcript[-200:])))
+            except Exception:
+                pass
 
     async def pm_text(self, prompt, *, include_learning=True):
         prompt = self.pm_profile.guidance()+'\n当前工作：\n'+prompt
