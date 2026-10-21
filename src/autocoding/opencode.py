@@ -61,7 +61,11 @@ class OpenCodeSession:
         process.stdin.close()
         client = httpx.AsyncClient(base_url=f'http://127.0.0.1:{port}', auth=('opencode', password),
             params={'directory': str(Path(cwd).resolve())},
-            timeout=httpx.Timeout(30,connect=5,write=10,pool=5), trust_env=False)
+            # A provider turn can legitimately take longer than the local
+            # acknowledgement request. Keep a finite bound, but do not turn a
+            # healthy GLM generation into a synthetic transport failure after
+            # 30 seconds.
+            timeout=httpx.Timeout(120,connect=10,write=30,pool=10), trust_env=False)
         adapter = cls(client, process=process, model=model)
         try:
             async with asyncio.timeout(timeout):

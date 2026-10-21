@@ -187,6 +187,27 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.host.coordinator.fallback_provider(record,'task_a'))
         self.assertEqual('codex',record['assignments']['task_a'])
 
+    async def test_pm_owned_input_takeover_falls_back_but_human_owned_does_not(self):
+        self.host.core.create_session('session_pm','claude',owner='human',key='session-pm')
+        self.host.core.takeover('session_pm','pm',0,key='takeover-pm')
+        self.rows.append({'id':'run_pm','task_id':'task_a','state':'reconciled',
+                          'provider':'claude','session_id':'session_pm',
+                          'reconciliation_reason':'RUN_INPUT_TAKEN_OVER'})
+        record={'assignments':{'task_a':'claude'},'agents':['claude','codex'],
+                'attempts':{'task_a':2}}
+        self.assertTrue(self.host.coordinator.fallback_provider(record,'task_a'))
+        self.assertEqual('codex',record['assignments']['task_a'])
+
+        self.host.core.create_session('session_human','claude',owner='human',key='session-human')
+        self.host.core.takeover('session_human','pm',0,key='takeover-to-pm')
+        self.host.core.takeover('session_human','human',1,key='takeover-to-human')
+        self.rows.append({'id':'run_human','task_id':'task_b','state':'reconciled',
+                          'provider':'claude','session_id':'session_human',
+                          'reconciliation_reason':'RUN_INPUT_TAKEN_OVER'})
+        record={'assignments':{'task_b':'claude'},'agents':['claude','codex'],
+                'attempts':{'task_b':2}}
+        self.assertFalse(self.host.coordinator.fallback_provider(record,'task_b'))
+
     async def test_shutdown_cancels_children_before_releasing_reservations(self):
         self.task('task_a')
         self.task('task_b')

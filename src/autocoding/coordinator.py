@@ -53,6 +53,25 @@ class Coordinator:
         current=json.loads(row['value'])
         return current.get('state')==state and current.get('active_tasks',[])==active_tasks
 
+    def pm_owned_input_takeover(self, run):
+        """Return whether the most recent input owner for this run is PM.
+
+        A human takeover is an explicit pause boundary. A PM takeover is the
+        normal setup step for every managed run, so a later recovery must not
+        mistake it for a request to abandon autonomous execution.
+        """
+        session_id=run.get('session_id')
+        if not session_id:
+            return False
+        with self.core.connection() as conn:
+            event=conn.execute("SELECT payload FROM events WHERE type='InputTakenOver' AND session_id=? ORDER BY seq DESC LIMIT 1",(session_id,)).fetchone()
+        if not event:
+            return False
+        try:
+            return json.loads(event['payload']).get('owner')=='pm'
+        except (TypeError, ValueError):
+            return False
+
     def fallback_provider(self, record, task_id):
         """Move a reconciled task to another configured provider once.
 
@@ -69,12 +88,13 @@ class Coordinator:
         upper=str(reason).upper()
         external_failure=any(code in upper for code in ('TIMEOUT','NETWORK','CONNECTION','TRANSPORT','RATE','LIMIT'))
         # Some runner failures are provider-neutral (for example a missing
-        # completion event).  The active assignment is still known, so a
+        # completion event). The active assignment is still known, so a
         # bounded fresh attempt on another configured provider is safer than
         # leaving the batch stranded awaiting a human restart.
         attributed=current.upper() in upper
-        generic_runner_failure=upper.startswith('RUN_TIMEOUT_') or upper.startswith('RUN_DELIVERY_')
-        if not external_failure or not (attributed or generic_runner_failure):
+        pm_takeover=upper.startswith('RUN_INPUT_TAKEN_OVER') and self.pm_owned_input_takeover(latest)
+        generic_runner_failure=(upper.startswith('RUN_TIMEOUT_') or upper.startswith('RUN_DELIVERY_') or pm_takeover)
+        if not (external_failure or pm_takeover) or not (attributed or generic_runner_failure):
             return False
         candidates=[agent for agent in record.get('agents',[]) if agent!=current]
         if not candidates:
