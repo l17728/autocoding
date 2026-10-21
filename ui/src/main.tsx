@@ -58,9 +58,11 @@ function App() {
   async function api(path:string, body?:unknown) {
     const deleting=typeof body==='object'&&body!==null&&('_method' in body)&&(body as {_method?:string})._method==='DELETE';
     const payload=deleting ? Object.fromEntries(Object.entries(body as Record<string,unknown>).filter(([key])=>key!=='_method')) : body;
-    const response = await fetch(path, {method:deleting ? 'DELETE' : body === undefined ? 'GET':'POST', headers:{Authorization:`Bearer ${token}`,
+    let response:Response;
+    try {response = await fetch(path, {method:deleting ? 'DELETE' : body === undefined ? 'GET':'POST', headers:{Authorization:`Bearer ${token}`,
       ...(body === undefined ? {} : {'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()})},
       body:payload === undefined ? undefined:JSON.stringify(payload)});
+    } catch {throw new Error('本机服务正在启动或自动重连；PM 已保留检查点，请稍候重试。')}
     return readResponse(response);
   }
   async function refresh() {
