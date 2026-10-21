@@ -305,12 +305,18 @@ class Coordinator:
                         # attempt and make a fresh one within the batch's
                         # configured retry budget.  This never resends the
                         # uncertain provider turn; it starts a new session.
-                        if (completed['state']=='reconciling' and
-                                record['attempts'][tid] < record['max_attempts']):
-                            self.fallback_provider(record,tid)
-                            self.host.workflow.recover()
-                            recovered=next(r for r in self.host.workflow.list() if r['id']==rid)
-                            if recovered['state']!='reconciled':
+                        if completed['state']=='reconciling':
+                            # A new provider is a new bounded attempt, even if
+                            # the previous provider consumed its local retry
+                            # budget. Do not strand a recoverable batch merely
+                            # because an adapter became healthy after a timeout.
+                            changed=self.fallback_provider(record,tid)
+                            if changed or record['attempts'][tid] < record['max_attempts']:
+                                self.host.workflow.recover()
+                                recovered=next(r for r in self.host.workflow.list() if r['id']==rid)
+                                if recovered['state']!='reconciled':
+                                    stopped=('reconciling',completed.get('reason','RUN_RECONCILIATION_REQUIRED'))
+                            else:
                                 stopped=('reconciling',completed.get('reason','RUN_RECONCILIATION_REQUIRED'))
                         else:
                             stopped=('reconciling',completed.get('reason','RUN_RECONCILIATION_REQUIRED'))

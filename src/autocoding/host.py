@@ -115,7 +115,19 @@ class Host:
 
     def _output(self, sid, kind, **data):
         self.output_seq += 1
-        self.output.append(self.redactor.value(dict(seq=self.output_seq, session_id=sid, type=kind, **data)))
+        event=self.redactor.value(dict(seq=self.output_seq, session_id=sid, type=kind, **data))
+        self.output.append(event)
+        # Runtime output is evidence for the task, not a disposable console.
+        # Keep a bounded redacted transcript across a service restart.
+        if sid:
+            with self.core.connection() as conn:
+                row=conn.execute('SELECT value FROM metadata WHERE key=?',('session_output:'+sid,)).fetchone()
+                try:
+                    transcript=json.loads(row['value']) if row else []
+                except (TypeError, ValueError):
+                    transcript=[]
+                transcript.append(event)
+                conn.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('session_output:'+sid,encoded(transcript[-200:])))
 
     async def pm_text(self, prompt, *, include_learning=True):
         prompt = self.pm_profile.guidance()+'\n当前工作：\n'+prompt

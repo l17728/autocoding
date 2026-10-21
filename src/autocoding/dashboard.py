@@ -97,8 +97,15 @@ class Dashboard:
                         instruction=str(json.loads(context['value']).get('initial',''))[:12000]
                     except (TypeError, ValueError):
                         pass
-                run['conversation']={'instruction':instruction,
-                    'events':[event for event in self.host.output if event.get('session_id')==sid][-20:]}
+                transcript=conn.execute('SELECT value FROM metadata WHERE key=?',('session_output:'+sid,)).fetchone()
+                try:
+                    events=json.loads(transcript['value']) if transcript else []
+                except (TypeError, ValueError):
+                    events=[]
+                live=[event for event in self.host.output if event.get('session_id')==sid]
+                seen={(event.get('seq'),event.get('type'),event.get('text'),event.get('code')) for event in events}
+                events.extend(event for event in live if (event.get('seq'),event.get('type'),event.get('text'),event.get('code')) not in seen)
+                run['conversation']={'instruction':instruction,'events':events[-200:]}
         visible = {s['id'] for s in result['sessions']}
         result.update(metadata={sid: data for sid, data in self.host.metadata.items() if sid in visible},
                       paused=self.host.paused, live_ids=[sid for sid, runtime in self.host.runtimes.items() if not runtime._quarantined])
