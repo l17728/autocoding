@@ -27,14 +27,18 @@ def main():
     parser.add_argument('--port', type=int, default=8765)
     args = parser.parse_args()
     root=args.project.resolve(); storage=root/'.local/workbench'; storage.mkdir(parents=True,exist_ok=True)
+    entry=Path(__file__).with_name('workbench.py')
     token_file=storage/'owner-token.txt'; log=storage/'watchdog.jsonl'
     worker=None; failures=0; started_at=0.0
     def note(event, **data):
         log.open('a',encoding='utf-8').write(json.dumps({'at':time.time(),'event':event,**data},ensure_ascii=False)+'\n')
     def start(reason):
         nonlocal worker, started_at
-        if worker and worker.poll() is None: worker.terminate(); worker.wait(timeout=8)
-        worker=subprocess.Popen([sys.executable, str(root/'tools/workbench.py'),'--project',str(root),'--port',str(args.port)],cwd=root)
+        if worker and worker.poll() is None:
+            worker.terminate()
+            try: worker.wait(timeout=8)
+            except subprocess.TimeoutExpired: worker.kill(); worker.wait(timeout=8)
+        worker=subprocess.Popen([sys.executable, str(entry),'--project',str(root),'--port',str(args.port)],cwd=entry.parent.parent)
         started_at=time.monotonic()
         note('worker_started',reason=reason,pid=worker.pid)
     start('supervisor_start')
@@ -48,12 +52,14 @@ def main():
         try:
             request(f'http://127.0.0.1:{args.port}/health')
             token=token_file.read_text(encoding='utf-8').strip()
-            projects=request(f'http://127.0.0.1:{args.port}/api/v1/projects',token).get('items',[])
+            projects=request(f'http://127.0.0.1:{args.port}/api/v1/projects',token)
             for project in projects:
                 snap=request(f"http://127.0.0.1:{args.port}/api/v1/projects/{project['id']}/snapshot",token)
                 batch=(snap.get('batches') or [{}])[-1]
-                stalled=(batch.get('state') in {'running','reconciling'} and not batch.get('active_tasks')
-                         and snap.get('task_counts',{}).get('todo',0)>0)
+                # Reconciliation may legitimately await evidence or the Owner.
+                # Only a claimed running batch with no active task is a liveness fault.
+                stalled=(batch.get('state') == 'running' and not batch.get('active_tasks')
+                         and snap.get('task_counts',{}).get('leased',0)>0)
                 if stalled: unhealthy=True; reason='BATCH_STALLED:'+project['id']; break
         except Exception as exc:
             unhealthy=True; reason='HTTP_UNRESPONSIVE:'+type(exc).__name__

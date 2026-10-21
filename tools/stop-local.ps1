@@ -25,7 +25,10 @@ try {
         throw "PID $($state.pid) 的命令行与本项目工作台不匹配；为保护其他程序，未停止它。"
     }
 
-    Stop-Process -Id $state.pid -Force -ErrorAction Stop
+    # The supervisor owns a worker process; terminate the complete process
+    # tree so no orphan Uvicorn listener survives after its state is removed.
+    & "$env:SystemRoot\System32\taskkill.exe" /PID $state.pid /T /F | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "无法停止受控服务树（PID $($state.pid)）。" }
     Write-Output "已停止工作台服务（PID $($state.pid)）。"
     $removeState = $true
 } finally {
