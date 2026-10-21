@@ -12,3 +12,5 @@
 .run-conversation{width:100%;margin:8px 0 0;padding-top:8px}.run-conversation summary{margin:0;font-size:10px}.run-prompt,.run-event{max-height:180px;overflow:auto;margin:8px 0 0;padding:8px;background:#f6f8fc;border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere;font:10px/1.55 ui-monospace,Consolas,monospace}.run-event.text{background:#f8fbff}.run-event.error{background:#fff5f3;color:#9e5148}
 
 .agent-stack{display:flex;flex-direction:column;gap:14px;min-width:0}.task-session{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.task-console{width:100%;margin:10px 0 0;padding-top:8px}.task-console summary{margin:0}.console-screen{max-height:360px;overflow:auto;margin-top:8px;padding:12px;background:#101923;color:#d9e6f7;border-radius:8px}.console-line{margin:0 0 10px;white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.65 ui-monospace,Consolas,monospace}.console-line b{color:#8fb8ff}.console-line.input b{color:#68d6aa}.console-line.error{color:#ffaba3}.console-line.tool_result{color:#d8c987}.console-line.receipt,.console-line.completed{color:#82d3ac}
