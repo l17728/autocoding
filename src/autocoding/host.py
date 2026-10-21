@@ -362,6 +362,11 @@ class Host:
                 elif method == 'approval/cancelled':
                     self.questions.cancel(sid,params.get('requestId'))
                     self._output(sid, 'approval_cancelled')
+                # Adapters can have a large buffered burst of tool/progress
+                # events. Yield after every frame so a busy transcript can
+                # never starve the local HTTP server and make the dashboard
+                # appear disconnected.
+                await asyncio.sleep(0)
         except asyncio.CancelledError:
             raise
         except (TransportError, DomainError) as exc:
