@@ -61,6 +61,12 @@ Claude 需要 Anthropic Messages 兼容接口。候选国内端点 https://open.
 
 ## 发布门禁
 
+### 2026-10-22 OpenCode 隔离配置复核
+
+平台为 OpenCode 建立独立 XDG 配置目录，因此不能依赖用户全局 `models.json` 补足 provider 元数据。检查发现原运行时只设置 provider ID 和 API key，未显式设置兼容 SDK、Coding Plan base URL 与模型描述；现在生成完整隔离 provider 配置，使用 `@ai-sdk/openai-compatible`、本机 OpenCode 缓存记录的 Coding Plan 端点及模型上限，并关闭启动期模型目录抓取。此配置只传入 OpenCode 子进程，不写回用户全局设置。
+
+OpenCode 官方 provider 文档要求自定义 provider 声明 SDK 包、base URL 和模型配置：[OpenCode Providers](https://opencode.ai/docs/providers/)。无凭据离线 sentinel 实测已可通过平台 `Host.start('opencode')` 建立 session；本轮真实单轮探针在旧配置下超时。更换配置后的真实智谱回合尚待凭据轮换后复验，不能据 sentinel session 启动宣称模型请求已完成。
+
 三种适配器逐一给出 L/P/E 状态；H 项不用于自动任务。真实终端与协议视图分别验收。没有确认机制的 PTY 会话允许人工操作，自动派发只在明确空闲、持有输入租约且没有待审批时进入，完成仍靠测试证据。网页无法核验不阻断核心数据层开发，但阻断对应真实供应商接入的完成声明。
 
 

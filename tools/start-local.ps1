@@ -14,12 +14,18 @@ $controlDirectory = Join-Path $projectRoot '.local\service-control'
 $stateFile = Join-Path $controlDirectory 'workbench.json'
 $logFile = Join-Path $controlDirectory 'workbench.log'
 $errorFile = Join-Path $controlDirectory 'workbench-error.log'
+$tokenFile = Join-Path $projectRoot '.local\workbench\owner-token.txt'
 $healthUrl = "http://127.0.0.1:$Port/health"
 
 function Test-WorkbenchHealth {
     try {
         $response = Invoke-WebRequest -Uri $healthUrl -Method Get -TimeoutSec 2 -UseBasicParsing
-        return $response.StatusCode -ge 200 -and $response.StatusCode -lt 300
+        if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 300) { return $false }
+        if (-not (Test-Path -LiteralPath $tokenFile)) { return $false }
+        $token = (Get-Content -LiteralPath $tokenFile -Raw -Encoding UTF8).Trim()
+        $identity = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/project" -Method Get -TimeoutSec 2 `
+            -Headers @{ Authorization = "Bearer $token" }
+        return [string]::Equals(([string]$identity.root).TrimEnd('\'), $projectRoot.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
     } catch {
         return $false
     }
@@ -36,6 +42,19 @@ if (-not (Test-Path -LiteralPath $supervisor)) { throw "找不到工作台监督
 if (-not (Test-Path -LiteralPath $ui)) { throw "找不到已构建的前端：$ui。请在 ui 目录运行 npm.cmd run build。" }
 
 New-Item -ItemType Directory -Path $controlDirectory -Force | Out-Null
+    # Serialize the port check, stale-state cleanup and supervisor registration.
+    # A named mutex is released by Windows if this launcher exits unexpectedly.
+    $hash = [System.Security.Cryptography.SHA256]::Create()
+    try { $scope = [BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($projectRoot.ToLowerInvariant()))).Replace('-', '') }
+    finally { $hash.Dispose() }
+    $startMutex = [Threading.Mutex]::new($false, "Local\AutocodingWorkbenchStart_$scope")
+    if (-not $startMutex.WaitOne(0)) {
+        for ($attempt = 0; $attempt -lt 150; $attempt++) {
+            if (Test-WorkbenchHealth) { Write-Output "服务已运行：http://127.0.0.1:$Port"; exit 0 }
+            Start-Sleep -Seconds 1
+        }
+        throw '另一个启动流程尚未完成，且服务仍未就绪。请查看工作台日志。'
+    }
 if (Test-WorkbenchHealth) {
     Write-Output "服务已运行：$healthUrl"
     exit 0
@@ -60,9 +79,11 @@ $state = [ordered]@{
     project_root = $projectRoot
     port = $Port
 }
-$state | ConvertTo-Json | Set-Content -LiteralPath $stateFile -Encoding UTF8
+$stateTemp = "$stateFile.$($process.Id).tmp"
+$state | ConvertTo-Json | Set-Content -LiteralPath $stateTemp -Encoding UTF8
+Move-Item -LiteralPath $stateTemp -Destination $stateFile -Force
 
-for ($attempt = 0; $attempt -lt 60; $attempt++) {
+for ($attempt = 0; $attempt -lt 150; $attempt++) {
     if ($process.HasExited) {
         Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
         throw "工作台启动后退出。请查看：$errorFile"
@@ -76,5 +97,5 @@ for ($attempt = 0; $attempt -lt 60; $attempt++) {
 
 if (-not $process.HasExited) { & "$env:SystemRoot\System32\taskkill.exe" /PID $process.Id /T /F | Out-Null }
 Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
-throw "工作台未在 60 秒内就绪。请查看：$errorFile"
+throw "工作台未在 150 秒内就绪。请查看：$errorFile"
 

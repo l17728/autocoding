@@ -132,6 +132,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(403, self.client.get('/api/v1/projects/other/snapshot', headers=self.headers).status_code)
         self.assertEqual(200, self.client.get(self.prefix + '/snapshot', headers=self.headers).status_code)
 
+    def test_pm_dialogue_is_authenticated_persistent_and_idempotent(self):
+        path=self.prefix+'/pm/dialogue/messages'
+        body={'message_id':'message_api_0001','text':'现在项目进度如何？'}
+        self.assertEqual(401,self.client.post(path,json=body).status_code)
+        headers={**self.headers,'Idempotency-Key':'dialogue-status'}
+        first=self.client.post(path,headers=headers,json=body)
+        self.assertEqual(200,first.status_code,first.text)
+        self.assertEqual(first.json(),self.client.post(path,headers=headers,json=body).json())
+        self.assertEqual(2,len(self.client.get(self.prefix+'/pm/dialogue',headers=self.headers).json()['conversation']['items']))
+        conflict=self.client.post(path,headers=headers,json={**body,'text':'different request'})
+        self.assertEqual(409,conflict.status_code)
+
     def test_interaction_history_is_authenticated_and_paginated(self):
         path=self.prefix+'/pm/interactions'
         self.assertEqual(401,self.client.get(path).status_code)

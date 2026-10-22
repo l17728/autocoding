@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
-from autocoding.providers import ProviderError, claude_environment, parse_jsonc, resolve_zhipu
+from autocoding.providers import ProviderError, claude_environment, opencode_provider, parse_jsonc, resolve_zhipu
 
 
 class ProviderTests(unittest.TestCase):
@@ -27,6 +27,15 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual("glm-5.3", config.model)
             self.assertEqual("test-key", config.api_key)
             self.assertEqual("env:LOCAL_KEY", config.source)
+
+    def test_opencode_config_has_explicit_coding_plan_endpoint_and_model_metadata(self):
+        config=resolve_zhipu(env={"ZHIPU_API_KEY":"PRIVATE_TEST_KEY"})
+        provider=opencode_provider(config)
+        self.assertEqual("@ai-sdk/openai-compatible",provider["npm"])
+        self.assertEqual("https://open.bigmodel.cn/api/coding/paas/v4",provider["options"]["baseURL"])
+        self.assertEqual("PRIVATE_TEST_KEY",provider["options"]["apiKey"])
+        self.assertEqual({"context":1_000_000,"output":131_072},provider["models"]["glm-5.3"]["limit"])
+        self.assertNotIn("PRIVATE_TEST_KEY",repr(config))
 
     def test_missing_key_and_unreadable_config_fail_closed(self):
         with self.assertRaisesRegex(ProviderError, "^CREDENTIAL_UNAVAILABLE$"):

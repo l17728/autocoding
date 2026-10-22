@@ -45,6 +45,12 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
                     args=adapter.start_thread.call_args.kwargs['mcp_servers']['autocoding']['args']
                 else:
                     child=json.loads(connect.call_args.kwargs['env']['OPENCODE_CONFIG_CONTENT'])
+                    self.assertFalse(connect.call_args.kwargs['glob_compat'])
+                    self.assertEqual('@ai-sdk/openai-compatible',child['provider']['zhipuai-coding-plan']['npm'])
+                    self.assertEqual('https://open.bigmodel.cn/api/coding/paas/v4',
+                                     child['provider']['zhipuai-coding-plan']['options']['baseURL'])
+                    self.assertEqual('PRIVATE_TEST_KEY',child['provider']['zhipuai-coding-plan']['options']['apiKey'])
+                    self.assertEqual('true',connect.call_args.kwargs['env']['OPENCODE_DISABLE_MODELS_FETCH'])
                     args=child['mcp']['autocoding']['command'][1:]
                     self.assertEqual('allow',child['permission']['autocoding_*'])
                     self.assertEqual('allow',child['permission']['*'])

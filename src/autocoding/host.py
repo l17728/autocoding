@@ -12,7 +12,7 @@ from .codex import CodexSession
 from .core import Core, DomainError, digest, identifier
 from .delivery import Approvals
 from .executables import native_executable
-from .providers import resolve_zhipu, claude_environment
+from .providers import resolve_zhipu, claude_environment, opencode_provider
 from .redaction import Redactor
 from .runtime import SessionRuntime
 from .transport import TransportError
@@ -26,7 +26,8 @@ class Host:
         self.storage.mkdir(parents=True, exist_ok=True)
         self.core = Core(self.storage / 'platform.db')
         from .dashboard import Dashboard
-        Dashboard(self).ensure_indexes()
+        self.dashboard = Dashboard(self)
+        self.dashboard.ensure_indexes()
         self.approvals = Approvals(self.core)
         self.workspaces = Workspaces(self.storage / 'worktrees')
         self.config = config
@@ -54,6 +55,8 @@ class Host:
         self.pm_profile = PMProfile(self)
         from .interactions import Interactions
         self.interactions = Interactions(self)
+        from .pm_dialogue import PMDialogue
+        self.pm_dialogue = PMDialogue(self)
         from .closure import Closure
         self.closure = Closure(self)
         self._closing = False
@@ -270,7 +273,8 @@ class Host:
                     from .opencode import OpenCodeSession
                     env = dict(os.environ)
                     provider_config = {'model': 'zhipuai-coding-plan/' + config.model,
-                        'provider': {'zhipuai-coding-plan': {'options': {'apiKey': config.api_key}}},
+                        'enabled_providers': ['zhipuai-coding-plan'],
+                        'provider': {'zhipuai-coding-plan': opencode_provider(config)},
                         'permission': {'*': 'allow' if bypass else 'ask','question':'allow'}}
                     if mcp_servers:
                         server = mcp_servers['autocoding']
@@ -278,8 +282,10 @@ class Host:
                             'command':[server['command'], *server['args']], 'enabled':True}}
                         provider_config['permission']['autocoding_*'] = 'allow'
                     env['OPENCODE_CONFIG_CONTENT'] = json.dumps(provider_config)
+                    env['OPENCODE_DISABLE_MODELS_FETCH'] = 'true'
                     adapter = await OpenCodeSession.connect(binary, cwd=cwd, env=env, storage=state_directory,
-                        model=config.model,resume=provider_session,permission_mode='bypass' if bypass else 'review')
+                        model=config.model,resume=provider_session,permission_mode='bypass' if bypass else 'review',
+                        glob_compat=False)
             else:
                 # An explicitly launched Codex session uses the installed account,
                 # with the requested full-access sandbox and explicit approvals.

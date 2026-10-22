@@ -12,6 +12,7 @@ import {HistoryPanel} from './HistoryPanel';
 import {ClosurePanel} from './ClosurePanel';
 import {RecoveryPanel} from './RecoveryPanel';
 import {AcceptancePanel} from './AcceptancePanel';
+import {PMDialogue} from './PMDialogue';
 import {readResponse} from './api';
 
 type Session = {id:string; agent:string; state:string; owner:string; epoch:number};
@@ -55,15 +56,17 @@ function App() {
   const generation=useRef(0),refreshSequence=useRef(0);
   const prefix = project ? `/api/v1/projects/${project.id}` : '';
 
-  async function api(path:string, body?:unknown) {
+  async function api(path:string, body?:unknown, operationKey?:string) {
     const deleting=typeof body==='object'&&body!==null&&('_method' in body)&&(body as {_method?:string})._method==='DELETE';
     const payload=deleting ? Object.fromEntries(Object.entries(body as Record<string,unknown>).filter(([key])=>key!=='_method')) : body;
     const init={method:deleting ? 'DELETE' : body === undefined ? 'GET':'POST', headers:{Authorization:`Bearer ${token}`,
-      ...(body === undefined ? {} : {'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()})},
+      ...(body === undefined ? {} : {'Content-Type':'application/json','Idempotency-Key':operationKey||crypto.randomUUID()})},
       body:payload === undefined ? undefined:JSON.stringify(payload)};
     let response:Response|undefined;
-    for(let attempt=0;attempt<4;attempt++){
-      try {response=await fetch(path,init);break} catch {if(attempt<3)await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)))}
+    for(let attempt=0;attempt<8;attempt++){
+      const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
+      try {response=await fetch(path,{...init,signal:controller.signal});break} catch {if(attempt<7)await new Promise(resolve=>setTimeout(resolve,Math.min(4000,500*(attempt+1))))}
+      finally {clearTimeout(timer)}
     }
     if(!response)throw new Error('本机服务尚未恢复连接；PM 已保留检查点，将自动继续重连。');
     return readResponse(response);
@@ -78,6 +81,7 @@ function App() {
     }
     if(version!==generation.current||sequence!==refreshSequence.current)return;
     setConnected(true);
+    setError(old=>old.startsWith('本机服务尚未恢复连接')?'':old);
     setSnapshot(state);
     if (messages.gap) setError('部分实时输出已超出保留窗口；任务和命令记录仍可查看。');
     cursor.current = messages.latest_seq;
@@ -86,13 +90,27 @@ function App() {
   useEffect(()=>{
     if (!token) return;
     let alive=true;
-    api('/api/v1/project').then(p=>{if(alive){setProject(p);setError('')}}).catch(e=>{setError(e.message);setToken('')});
+    const connect=async()=>{
+      let attempt=0;
+      while(alive){
+        try {const p=await api('/api/v1/project');if(alive){setProject(p);setError('')}return}
+        catch(e){
+          if(!alive)return;
+          const message=e instanceof Error?e.message:String(e);
+          if(message.startsWith('本机服务尚未恢复连接')){
+            setError(message);await new Promise(resolve=>setTimeout(resolve,Math.min(10000,1000*2**Math.min(attempt++,4))));continue;
+          }
+          setError(message);setToken('');return;
+        }
+      }
+    };
+    void connect();
     return ()=>{alive=false};
   },[token]);
   useEffect(()=>{
     if (!project) return;
     let active=true;
-    const poll=async()=>{try{await refresh()}catch(e){if(active)setError(String(e))}finally{if(active)timer=setTimeout(poll,1000)}};
+    const poll=async()=>{try{await refresh()}catch(e){if(active)setError(e instanceof Error&&e.message.startsWith('本机服务尚未恢复连接')?e.message:String(e))}finally{if(active)timer=setTimeout(poll,1000)}};
     let timer:ReturnType<typeof setTimeout>;
     void poll();
     return ()=>{active=false;clearTimeout(timer)};
@@ -123,7 +141,7 @@ function App() {
   const activeRuns=snapshot.tasks.filter(task=>['leased','verifying'].includes(task.state)).map(task=>({task,run:[...(snapshot.runs||[])].reverse().find(run=>run.task_id===task.id)}));
   const hasNewDelegation=!!goal.trim()&&!!criteriaItems.length;
   const delegationDisabled=!!busy||snapshot.paused||batchActive||(!hasNewDelegation&&!existingTodos.length);
-  return <div className="shell"><header><div className="brand"><span className="mark">A</span><div><strong>开发协作</strong><small>本地工作台 · {project.name}</small></div></div><div className="header-actions"><span className={'dot '+(!connected||snapshot.paused?'amber':'')}/><span>{!connected?'服务未连接或正在重连':snapshot.paused?'派发已暂停':'服务已连接'}</span><button disabled={!!busy} onClick={()=>action('pause',()=>api(prefix+'/pause',{paused:!snapshot.paused}))}>{snapshot.paused?'继续派发':'暂停派发'}</button></div></header><ProjectPanel project={project} api={api} select={selectProject} disabled={!!busy}/><GlobalInputHistory api={api} usePlan={(savedGoal,savedAcceptance)=>{setGoal(savedGoal);setCriteria(savedAcceptance.join('\n'))}}/>
+  return <div className="shell"><header><div className="brand"><span className="mark">A</span><div><strong>开发协作</strong><small>本地工作台 · {project.name}</small></div></div><div className="header-actions"><span className={'dot '+(!connected||snapshot.paused?'amber':'')}/><span>{!connected?'服务未连接或正在重连':snapshot.paused?'派发已暂停':'服务已连接'}</span><button disabled={!!busy} onClick={()=>action('pause',()=>api(prefix+'/pause',{paused:!snapshot.paused}))}>{snapshot.paused?'继续派发':'暂停派发'}</button></div></header><ProjectPanel project={project} api={api} select={selectProject} disabled={!!busy}/><GlobalInputHistory api={api} usePlan={(savedGoal,savedAcceptance)=>{setGoal(savedGoal);setCriteria(savedAcceptance.join('\n'))}}/><PMDialogue key={'pm-dialogue:'+project.id} prefix={prefix} api={api}/>
     <div className="overview"><div><p className="eyebrow">PROJECT WORKSPACE</p><h1>让每一步执行都有据可查。</h1><p className="muted">{project.root}</p></div><div className="metrics"><div><b>{snapshot.pm_progress?.percent??0}<i>%</i></b><span title={snapshot.pm_progress?.basis}>PM 预估总体进度</span><progress aria-label="PM 预估总体进度" value={snapshot.pm_progress?.percent??0} max="100"/></div><div><b>{snapshot.task_counts?.done??snapshot.tasks.filter(t=>t.state==='done').length}<i> / {snapshot.totals?.tasks??snapshot.tasks.length}</i></b><span>任务已验证</span></div><div><b>{snapshot.pm_progress?.remaining_equivalent_tasks??0}</b><span>预估剩余等价任务</span></div><div><b>{snapshot.live_ids.length}</b><span>在线会话</span></div><div><b>{pending.length}</b><span>本页等待审批</span></div></div></div>
     {error&&<div role="alert" className="banner"><span>{error}</span><button onClick={()=>setError('')}>关闭</button></div>}
     {!!snapshot.payloads_omitted&&<p role="status">有 {snapshot.payloads_omitted} 条历史内容过大，页面仅显示安全摘要；完整记录仍保留在本地账本，任务操作不受影响。</p>}

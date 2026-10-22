@@ -34,12 +34,18 @@ class OpenCodeSession:
         self._denied_tools = set()
 
     @classmethod
-    async def connect(cls, executable, *, cwd, env, storage, model='glm-5.3', timeout=90, resume=None, permission_mode='bypass'):
+    async def connect(cls, executable, *, cwd, env, storage, model='glm-5.3', timeout=90, resume=None,
+                      permission_mode='bypass', glob_compat=False):
         if permission_mode not in {'bypass','review'}:
             raise TransportError('INVALID_PERMISSION_MODE')
         storage = Path(storage).resolve()
         storage.mkdir(parents=True, exist_ok=True)
-        env = configure_glob_path(env, storage, cwd)
+        # OpenCode 1.19.3 hangs while creating its first session when a local
+        # glob hook is injected. Keep the workaround opt-in until that
+        # combination passes a live session-start probe; use the native session
+        # path for the installed CLI instead of repeatedly timing out.
+        if glob_compat:
+            env = configure_glob_path(env, storage, cwd)
         for variable, folder in [('XDG_CONFIG_HOME','config'),('XDG_DATA_HOME','data'),
                                  ('XDG_CACHE_HOME','cache'),('XDG_STATE_HOME','state')]:
             target = storage / folder

@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
 type Project={id:string;name:string;root:string;github_owner?:string;github_repository?:string;permission_mode?:string;revision?:number};
-export type Api=(path:string,body?:unknown)=>Promise<any>;
+export type Api=(path:string,body?:unknown,idempotencyKey?:string)=>Promise<any>;
 export function ProjectPanel({project,api,select,disabled=false}:{project:Project;api:Api;select:(p:Project)=>void;disabled?:boolean}) {
   const [projects,setProjects]=useState<Project[]>([]),[settings,setSettings]=useState<Project>(project);
   const [message,setMessage]=useState(''),[busy,setBusy]=useState(false),[directory,setDirectory]=useState<any>(null),[documents,setDocuments]=useState<{name:string;bytes:number}[]>([]),[deleteName,setDeleteName]=useState('');

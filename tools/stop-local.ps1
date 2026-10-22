@@ -12,24 +12,45 @@ if (-not (Test-Path -LiteralPath $stateFile)) {
 $removeState = $false
 try {
     $state = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
-    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($state.pid)" -ErrorAction SilentlyContinue
-    if (-not $process) {
-        Write-Output '登记的工作台进程已退出。'
-        $removeState = $true
-        exit 0
-    }
-
     $expectedEntry = Join-Path $projectRoot 'tools\workbench_supervisor.py'
-    $commandLine = [string]$process.CommandLine
-    if ($commandLine -notlike "*$expectedEntry*" -or $commandLine -notlike "*--port $($state.port)*") {
-        throw "PID $($state.pid) 的命令行与本项目工作台不匹配；为保护其他程序，未停止它。"
+    $targets = @(@{ pid=[int]$state.pid; marker=$expectedEntry })
+    if ($state.worker_pid) { $targets += @{ pid=[int]$state.worker_pid; marker=(Join-Path $projectRoot 'tools\workbench.py') } }
+    $supervisor = Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$state.pid)" -ErrorAction SilentlyContinue
+    $listener = Get-NetTCPConnection -LocalPort ([int]$state.port) -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($listener) {
+        # Recover the earlier direct-launch layout and a detached worker left
+        # behind after its supervisor died. Match the full project entry and
+        # port before adding the listener to the controlled process list.
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+        $commandLine = [string]$process.CommandLine
+        $workerMarker = Join-Path $projectRoot 'tools\workbench.py'
+        if (-not $process -or $commandLine -notlike "*$workerMarker*" -or
+            $commandLine -notlike "*--project $projectRoot*" -or
+            $commandLine -notlike "*--port $($state.port)*") {
+            throw "端口 $($state.port) 的监听进程无法确认为本项目工作台；为保护其他程序，未停止它。"
+        }
+        if (-not ($targets | Where-Object { $_.pid -eq [int]$listener.OwningProcess })) {
+            $targets += @{ pid=[int]$listener.OwningProcess; marker=$workerMarker }
+        }
     }
-
-    # The supervisor owns a worker process; terminate the complete process
-    # tree so no orphan Uvicorn listener survives after its state is removed.
-    & "$env:SystemRoot\System32\taskkill.exe" /PID $state.pid /T /F | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "无法停止受控服务树（PID $($state.pid)）。" }
-    Write-Output "已停止工作台服务（PID $($state.pid)）。"
+    foreach ($target in $targets) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($target.pid)" -ErrorAction SilentlyContinue
+        if (-not $process) { continue }
+        $commandLine = [string]$process.CommandLine
+        if ($commandLine -notlike "*$($target.marker)*" -or $commandLine -notlike "*--port $($state.port)*") {
+            throw "PID $($target.pid) 的命令行与登记的工作台不匹配；为保护其他程序，未停止它。"
+        }
+        & "$env:SystemRoot\System32\taskkill.exe" /PID $target.pid /T /F | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            $remaining = Get-CimInstance Win32_Process -Filter "ProcessId=$($target.pid)" -ErrorAction SilentlyContinue
+            if ($remaining) { throw "无法停止受控服务进程树（PID $($target.pid)）。" }
+        }
+    }
+    $remainingListener = Get-NetTCPConnection -LocalPort ([int]$state.port) -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($remainingListener) { throw "端口 $($state.port) 仍在监听（PID $($remainingListener.OwningProcess)）；保留服务登记以便继续恢复。" }
+    Write-Output '已停止工作台监督器和服务进程树。'
     $removeState = $true
 } finally {
     if ($removeState) { Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue }

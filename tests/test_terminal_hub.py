@@ -68,8 +68,13 @@ class TerminalHubTests(unittest.IsolatedAsyncioTestCase):
                         elif agent=='claude':
                             self.assertIn('--dangerously-skip-permissions',argv)
                         else:
-                            self.assertEqual('allow',json.loads(start.call_args.kwargs['env']['OPENCODE_CONFIG_CONTENT'])['permission']['*'])
+                            child_config=json.loads(start.call_args.kwargs['env']['OPENCODE_CONFIG_CONTENT'])
+                            self.assertEqual('allow',child_config['permission']['*'])
+                            self.assertEqual('@ai-sdk/openai-compatible',child_config['provider']['zhipuai-coding-plan']['npm'])
+                            self.assertEqual('https://open.bigmodel.cn/api/coding/paas/v4',
+                                             child_config['provider']['zhipuai-coding-plan']['options']['baseURL'])
                             child=start.call_args.kwargs['env']
+                            self.assertEqual('true',child['OPENCODE_DISABLE_MODELS_FETCH'])
                             self.assertEqual(str(Path(original['state_directory'])/'profile'),child['OPENCODE_TEST_HOME'])
                             self.assertEqual('true',child['OPENCODE_DISABLE_PROJECT_CONFIG'])
                             self.assertNotIn('OPENCODE_PURE',child)

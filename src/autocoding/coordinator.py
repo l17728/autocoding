@@ -170,7 +170,10 @@ class Coordinator:
         generic_runner_failure=(upper.startswith(('RUN_TIMEOUT_','RUN_DELIVERY_','RPC_TIMEOUT_','RPC_DELIVERY_')) or pm_takeover)
         if not (external_failure or pm_takeover) or not (attributed or generic_runner_failure):
             return False
-        candidates=[agent for agent in record.get('agents',[]) if agent!=current]
+        tried=set(record.get('provider_attempts',{}).get(task_id,[]))
+        tried.add(current)
+        record.setdefault('provider_attempts',{}).setdefault(task_id,[current])
+        candidates=[agent for agent in record.get('agents',[]) if agent not in tried]
         if not candidates:
             return False
         # Prefer an agent that has not recently failed. If every candidate is
@@ -179,6 +182,7 @@ class Coordinator:
         replacement=next((agent for agent in candidates if self.health(agent).get('state')=='available'),candidates[0])
         self.mark_unavailable(current,reason)
         record['assignments'][task_id]=replacement
+        record['provider_attempts'][task_id].append(replacement)
         record.setdefault('provider_fallbacks',[]).append({
             'task_id':task_id,'from':current,'to':replacement,
             'reason':reason,'at':self.core.clock()})

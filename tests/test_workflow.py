@@ -152,8 +152,8 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         record={'id':'run_restart','task_id':'task_a','agent_id':'agent:run_restart'}
         self.host.workflow.save(record,'running')
         self.host.recover()
-        self.assertEqual('reconciling',self.host.workflow.list()[0]['state'])
-        self.assertEqual('blocked',self.host.core.snapshot()['tasks'][0]['state'])
+        self.assertEqual('reconciled',self.host.workflow.list()[0]['state'])
+        self.assertEqual('todo',self.host.core.snapshot()['tasks'][0]['state'])
         self.assertEqual({},self.host.runtimes)
 
     async def test_approval_guard_rejects_escape_and_protected_writes(self):

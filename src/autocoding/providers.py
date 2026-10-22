@@ -19,6 +19,18 @@ class ProviderConfig:
     api_key: str = field(repr=False)
 
 
+def opencode_provider(config: ProviderConfig):
+    """Build an isolated OpenAI-compatible Zhipu coding-plan provider profile."""
+    return {
+        'npm': '@ai-sdk/openai-compatible',
+        'name': 'Zhipu AI Coding Plan',
+        'options': {'baseURL': 'https://open.bigmodel.cn/api/coding/paas/v4', 'apiKey': config.api_key},
+        'models': {config.model: {'name': config.model,
+                                  'limit': {'context': 1_000_000, 'output': 131_072},
+                                  'tool_call': True}},
+    }
+
+
 def parse_jsonc(text: str):
     """Remove comments/trailing commas only outside JSON strings."""
     result = []

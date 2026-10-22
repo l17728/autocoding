@@ -30,13 +30,16 @@ class DelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('executing',result['state'])
         self.assertEqual(['task_delegated'],self.host.coordinator.start.call_args.args[0])
         self.assertEqual(2,self.host.coordinator.start.call_args.kwargs['max_attempts'])
-        self.assertEqual('实现中文界面',self.host.core.snapshot()['tasks'][0]['description'])
+        self.assertIn('实现中文界面',self.host.core.snapshot()['tasks'][0]['description'])
+        self.assertIn('业务验收标准',self.host.core.snapshot()['tasks'][0]['description'])
         self.assertEqual(result['id'],records(self.host)[0]['id'])
 
-    async def test_missing_checks_rejected_before_model_call(self):
-        with self.assertRaisesRegex(DomainError,'DELEGATION_REQUIRES_REGISTERED_CHECKS'):
-            await delegate(self.host,'目标',['not-configured'])
-        self.host.propose.assert_not_awaited()
+    async def test_pm_creates_its_own_check_instead_of_requiring_owner_configuration(self):
+        result=await delegate(self.host,'目标',['not-configured'])
+        self.assertEqual('executing',result['state'])
+        self.host.propose.assert_awaited_once()
+        policy=Acceptance(self.host).load()
+        self.assertIn('pm_auto',policy['checks'])
 
     async def test_incomplete_plan_cannot_drop_an_acceptance_requirement(self):
         original=self.host.propose.side_effect

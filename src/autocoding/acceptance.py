@@ -64,6 +64,11 @@ class Acceptance:
             try:
                 validated=self.validate(current['config'])
             except DomainError:
+                validated=None
+            if current.get('source') != 'pm_auto' or validated is None:
+                # Existing hand-maintained commands are not a prerequisite for
+                # delegation. Keep their original task intent below, while PM
+                # owns and installs the executable verification policy.
                 validated=self.automatic_config()
                 self.validate(validated)
                 record=dict(revision=current['revision']+1,source='pm_auto',config=validated)

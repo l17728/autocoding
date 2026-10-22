@@ -82,6 +82,10 @@ class PlanInput(Body):
     goal: str = Field(min_length=1, max_length=10000)
     acceptance: list[str] = Field(min_length=1, max_length=50)
 
+class PMDialogueInput(Body):
+    message_id: str = Field(pattern=r'^[A-Za-z0-9_-]{8,100}$')
+    text: str = Field(min_length=1, max_length=12000)
+
 class PMProfileInput(Body):
     revision: int = Field(ge=0)
     preferences: dict[str,str]
@@ -572,6 +576,15 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
     @app.get(prefix+'/pm/interactions',dependencies=guarded)
     async def pm_interactions(offset: int=0, limit: int=25):
         return await asyncio.to_thread(host.interactions.snapshot,offset,limit)
+
+    @app.get(prefix+'/pm/dialogue',dependencies=guarded)
+    async def pm_dialogue(offset: int=0, limit: int=100):
+        return {'conversation':host.pm_dialogue.list(offset,limit),'status':host.pm_dialogue.status()}
+
+    @app.post(prefix+'/pm/dialogue/messages',dependencies=guarded)
+    async def pm_dialogue_message(body: PMDialogueInput, request: Request):
+        return await external_once(host.core,'pm_dialogue_submit',request.headers['idempotency-key'],
+            body.model_dump(),lambda:host.pm_dialogue.submit(body.message_id,body.text))
 
     @app.get(prefix+'/pm/closures',dependencies=guarded)
     async def pm_closures():

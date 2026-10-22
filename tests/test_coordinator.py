@@ -204,6 +204,19 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.host.coordinator.fallback_provider(record,'task_a'))
         self.assertEqual('codex',record['assignments']['task_a'])
 
+    async def test_provider_fallback_visits_each_configured_provider_only_once(self):
+        record={'assignments':{'task_a':'codex'},'agents':['codex','opencode','claude'],
+                'attempts':{'task_a':1}}
+        for provider, replacement in [('codex','opencode'),('opencode','claude')]:
+            self.rows.append({'id':'run_'+provider,'task_id':'task_a','state':'reconciling',
+                              'provider':provider,'reason':provider.upper()+'_HTTP_TIMEOUT'})
+            self.assertTrue(self.host.coordinator.fallback_provider(record,'task_a'))
+            self.assertEqual(replacement,record['assignments']['task_a'])
+        self.rows.append({'id':'run_claude','task_id':'task_a','state':'reconciling',
+                          'provider':'claude','reason':'CLAUDE_HTTP_TIMEOUT'})
+        self.assertFalse(self.host.coordinator.fallback_provider(record,'task_a'))
+        self.assertEqual(['codex','opencode','claude'],record['provider_attempts']['task_a'])
+
     async def test_pm_owned_input_takeover_falls_back_but_human_owned_does_not(self):
         self.host.core.create_session('session_pm','claude',owner='human',key='session-pm')
         self.host.core.takeover('session_pm','pm',0,key='takeover-pm')

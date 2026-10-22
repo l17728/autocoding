@@ -10,7 +10,7 @@ import time
 
 from .core import DomainError, identifier
 from .executables import native_executable
-from .providers import resolve_zhipu, claude_environment
+from .providers import resolve_zhipu, claude_environment, opencode_provider
 from .opencode_compat import isolate_profile
 from .redaction import Redactor
 from .terminal import TerminalSession
@@ -129,8 +129,10 @@ class TerminalHub:
                     env = isolate_profile(env,state_directory)
                     env['OPENCODE_DISABLE_AUTOUPDATE']='true'
                     env['OPENCODE_CONFIG_CONTENT'] = json.dumps({'model':'zhipuai-coding-plan/'+config.model,
-                        'provider':{'zhipuai-coding-plan':{'options':{'apiKey':config.api_key}}},
+                        'enabled_providers':['zhipuai-coding-plan'],
+                        'provider':{'zhipuai-coding-plan':opencode_provider(config)},
                         'permission':{'*':'allow' if self.host.permission_mode()=='bypass' else 'ask','question':'allow'}})
+                    env['OPENCODE_DISABLE_MODELS_FETCH']='true'
                     for variable,folder in [('XDG_CONFIG_HOME','config'),('XDG_DATA_HOME','data'),
                                             ('XDG_CACHE_HOME','cache'),('XDG_STATE_HOME','state')]:
                         env[variable] = str(state_directory / folder)
