@@ -219,6 +219,17 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(result['gap'])
         self.assertEqual(2000, len(result['events']))
 
+    def test_public_output_is_restored_after_service_restart(self):
+        self.host._output('session_a', 'text', text='saved agent reply')
+        self.host._output('session_b', 'tool_result', activity='Read', detail='saved tool output')
+
+        restarted=Host(self.host.root,self.host.storage)
+
+        self.assertEqual(2,restarted.output_seq)
+        self.assertEqual(['saved agent reply','saved tool output'],[event.get('text') or event.get('detail') for event in restarted.output])
+        restarted._output('session_c','text',text='after restart')
+        self.assertEqual(3,restarted.output_seq)
+
     def test_workspace_result_survives_app_restart_and_conflicting_retry(self):
         self.host.workspaces.create = Mock(return_value={'id': 'workspace_fixture'})
         body = {'head_sha': 'a' * 40}

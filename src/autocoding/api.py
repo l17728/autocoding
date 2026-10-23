@@ -924,7 +924,8 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
     async def output(after: int = 0):
         oldest = host.output[0]['seq'] if host.output else host.output_seq + 1
         return {'events': [e for e in host.output if e['seq'] > after], 'latest_seq': host.output_seq,
-                'gap': after < oldest - 1, 'persistent': False}
+                'gap': after < oldest - 1, 'persistent': True,
+                'retention': {'global_events': 2000, 'per_session_events': 200}}
 
     @app.get(prefix + '/events', dependencies=guarded)
     async def events(request: Request, after_seq: int = 0, once: bool = False):

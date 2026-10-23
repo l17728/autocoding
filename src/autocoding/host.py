@@ -9,7 +9,7 @@ import uuid
 
 from .claude import ClaudeSession
 from .codex import CodexSession
-from .core import Core, DomainError, digest, identifier
+from .core import Core, DomainError, digest, encoded, identifier
 from .delivery import Approvals
 from .executables import native_executable
 from .providers import resolve_zhipu, claude_environment, opencode_provider
@@ -36,6 +36,7 @@ class Host:
         self.output = deque(maxlen=2000)
         self.output_seq = 0
         self.redactor = Redactor()
+        self._restore_output()
         self.operations = {}
         self.deliveries = {}
         self.paused = False
@@ -70,6 +71,22 @@ class Host:
             from .cold_start import install
             install(self.core)
         self.review_task = None
+
+    def _restore_output(self):
+        """Restore the bounded public transcript after a service restart."""
+        restored=[]
+        with self.core.connection() as conn:
+            rows=conn.execute("SELECT value FROM metadata WHERE key GLOB 'session_output:*'").fetchall()
+        for row in rows:
+            try:
+                events=json.loads(row['value'])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(events,list):
+                restored.extend(event for event in events if isinstance(event,dict) and isinstance(event.get('seq'),int))
+        restored.sort(key=lambda event:event['seq'])
+        self.output.extend(restored[-self.output.maxlen:])
+        self.output_seq=max((event['seq'] for event in restored),default=0)
 
     def start_services(self):
         if self.review_task is None or self.review_task.done():
