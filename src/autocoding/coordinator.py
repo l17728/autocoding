@@ -315,7 +315,12 @@ class Coordinator:
                                 blockers=[r['id'] for r in conn.execute(
                                     "SELECT p.id FROM dependencies d JOIN tasks p ON p.id=d.depends_on "
                                     "WHERE d.task_id=? AND p.state!='done' ORDER BY p.id",(task['id'],))]
-                            task_stops[task['id']]=('reconciling','BATCH_TASKS_BLOCKED',blockers)
+                            blocker_stops=[task_stops.get(blocker) for blocker in blockers]
+                            exhausted_frontier=bool(blockers) and all(
+                                stopped is not None and stopped[0]=='rework_required'
+                                for stopped in blocker_stops)
+                            blocked_state='rework_required' if exhausted_frontier else 'reconciling'
+                            task_stops[task['id']]=(blocked_state,'BATCH_TASKS_BLOCKED',blockers)
                     if not running:
                         self.save_stopped_batch(record,task_stops)
                         return
@@ -483,5 +488,8 @@ class Coordinator:
                 'blocked_by':blocked_by})
         record['stop_evidence']=evidence
         priority='reconciling' if any(item['state']=='reconciling' for item in evidence) else 'rework_required'
-        reason=next((item['reason'] for item in evidence if item['state']==priority),evidence[0]['reason'])
+        reason=next((item['reason'] for item in evidence if item['state']==priority
+                     and item['reason']!='BATCH_TASKS_BLOCKED'),None)
+        if reason is None:
+            reason=next((item['reason'] for item in evidence if item['state']==priority),evidence[0]['reason'])
         self.save(record,priority,reason=reason,**stop_details(reason),active_tasks=[])

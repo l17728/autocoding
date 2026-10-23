@@ -191,6 +191,22 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('task_a',batch['stop_evidence'][0]['task_id'])
         self.assertEqual('BATCH_ATTEMPT_LIMIT',batch['stop_evidence'][0]['reason'])
 
+    async def test_exhausted_dependency_frontier_is_rework_not_reconciliation(self):
+        self.task('task_a')
+        self.task('task_b',['task_a'])
+        self.fail='task_a'
+        self.release.set()
+        await self.host.coordinator.start(['task_a','task_b'],max_concurrency=1,max_attempts=2)
+        await self.until(lambda:self.host.coordinator.current is None)
+
+        batch=self.host.coordinator.list()[0]
+        self.assertEqual('rework_required',batch['state'])
+        self.assertEqual('BATCH_ATTEMPT_LIMIT',batch['reason'])
+        blocked=next(item for item in batch['stop_evidence'] if item['task_id']=='task_b')
+        self.assertEqual('rework_required',blocked['state'])
+        self.assertEqual('BATCH_TASKS_BLOCKED',blocked['reason'])
+        self.assertEqual(['task_a'],blocked['blocked_by'])
+
     async def test_restart_recovery_never_dispatches_past_batch_attempt_limit(self):
         self.task('task_a')
         _,checks,protected=self.configuration('task_a')
