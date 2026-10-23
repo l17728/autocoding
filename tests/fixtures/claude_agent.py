@@ -1,4 +1,4 @@
-"""Claude stream-json contract substitute; no network or credentials."""
+﻿"""Claude stream-json contract substitute; no network or credentials."""
 import json
 import sys
 import time
@@ -21,11 +21,21 @@ for line in sys.stdin:
         send({"type": "rate_limit_event", "session_id": sid,
               "api_key": "PRIVATE_CANARY", "message": {"content": "PRIVATE_CANARY"}})
         continue
+    result = {"type": "result", "session_id": sid, "user_message_uuid": mid,
+              "user_message_uuids": [mid], "subtype": "success", "is_error": False}
+    if mode == "tool-progress":
+        send({**message, "isReplay": True})
+        send({"type":"tool_progress","session_id":sid,"tool_name":"Bash",
+              "tool_use_id":"tool-progress-1","elapsed_time_seconds":12.5,
+              "heartbeat":True,"uuid":"protocol-event-id"})
+        send({"type":"assistant","session_id":sid,"user_message_uuid":mid,
+              "user_message_uuids":[mid],"parent_tool_use_id":None,
+              "message":{"role":"assistant","content":[{"type":"text","text":"Progress handled."}]}})
+        send(result)
+        continue
     if mode == "approval":
         send({"type": "control_request", "request_id": "approve", "request": {"subtype": "can_use_tool"}})
         continue
-    result = {"type": "result", "session_id": sid, "user_message_uuid": mid,
-              "user_message_uuids": [mid], "subtype": "success", "is_error": False}
     if mode == "tool-no-uuid":
         send({"type": "assistant", "session_id": sid, "parent_tool_use_id": None,
               "message": {"role": "assistant", "content": [

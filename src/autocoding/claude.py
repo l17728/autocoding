@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import uuid
 from .transport import JsonLineProcess, TransportError
 
@@ -183,6 +184,18 @@ class ClaudeSession:
             raise TransportError("CLAUDE_SESSION_MISMATCH")
         if kind in {"system", "command_lifecycle"}:
             return  # Local metadata is neither a receipt nor public model text.
+        if kind == 'tool_progress':
+            name=message.get('tool_name')
+            tool_id=message.get('tool_use_id')
+            elapsed=message.get('elapsed_time_seconds')
+            if (not isinstance(name,str) or not name or len(name)>160
+                    or not isinstance(tool_id,str) or not tool_id or len(tool_id)>200
+                    or isinstance(elapsed,bool) or not isinstance(elapsed,(int,float))
+                    or not math.isfinite(elapsed) or elapsed < 0 or elapsed > 86400):
+                raise TransportError('PROTOCOL_MALFORMED')
+            self._emit('tool/progress', turnId=self.turn_id, toolUseId=tool_id,
+                       toolName=name, elapsedSeconds=elapsed)
+            return
         if kind == "user":
             body = message.get("message")
             if self.tools_enabled and isinstance(body, dict) and isinstance(body.get('content'), list):

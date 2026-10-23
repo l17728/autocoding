@@ -353,6 +353,9 @@ class Host:
                         self._output(sid, 'text', text=text)
                 elif method == 'tool/started':
                     self._output(sid,'tool_started',activity=params.get('toolName'))
+                elif method == 'tool/progress':
+                    self._output(sid,'tool_progress',activity=params.get('toolName'),
+                                 elapsed_seconds=params.get('elapsedSeconds'))
                 elif method == 'agent/question':
                     question = self.questions.register(sid,event)
                     self._output(sid,'question',question_id=question['id'])
@@ -396,7 +399,7 @@ class Host:
             raise
         except (TransportError, DomainError) as exc:
             if not runtime.closed:
-                diagnostic=getattr(runtime.adapter,'last_error_diagnostic',None)
+                diagnostic=getattr(getattr(runtime,'adapter',None),'last_error_diagnostic',None)
                 self._output(sid, 'error', code=exc.code, protocol_diagnostic=diagnostic)
             restart = (not self._closing and not runtime.closed and exc.code in {
                 'PROCESS_STREAM_CLOSED','PROCESS_READ_FAILED','OPENCODE_CONNECTION_LOST','OPENCODE_HTTP_TIMEOUT',

@@ -177,6 +177,14 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('rate_limit_event',event['protocol_diagnostic']['event_type'])
         self.assertNotIn('PRIVATE_CANARY',str(event))
 
+    async def test_claude_tool_progress_is_visible_in_public_output(self):
+        await self.connect('tool-progress')
+        receipt=await self.host.send('s',0,'probe tool progress',key='tool-progress')
+        await self.wait_state(receipt['command_id'],'completed')
+        event=next(item for item in self.host.output if item['type']=='tool_progress')
+        self.assertEqual('Bash',event['activity'])
+        self.assertEqual(12.5,event['elapsed_seconds'])
+
     async def test_queue_limit_keeps_idempotent_retry_available(self):
         self.host.core.create_session('s','fixture',owner='human',key='s')
         first=None

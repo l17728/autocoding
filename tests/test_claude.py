@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 from pathlib import Path
 import sys
@@ -120,6 +120,16 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('rate_limit_event', diagnostic['event_type'])
         self.assertTrue(diagnostic['session_matches'])
         self.assertNotIn('PRIVATE_CANARY', json.dumps(diagnostic))
+
+    async def test_tool_progress_is_forwarded_without_raw_provider_frame(self):
+        runtime = await self.runtime('tool-progress')
+        command = self.core.enqueue("claude_test", "pm", 0, "tool progress probe", key="tool-progress")["command_id"]
+        await runtime.send(command, "tool progress probe")
+        events = await self.finish(runtime, command)
+        progress = next(event for event in events if event['method']=='tool/progress')
+        self.assertEqual('Bash', progress['params']['toolName'])
+        self.assertEqual(12.5, progress['params']['elapsedSeconds'])
+        self.assertNotIn('protocol-event-id', json.dumps(events))
 
     async def test_tool_activity_and_result_are_available_to_live_console(self):
         runtime=await self.runtime('tool-output',tools_enabled=True)
