@@ -7,6 +7,7 @@ errors, thinking blocks, settings or replayed input enter the event stream.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from .transport import JsonLineProcess, TransportError
 
@@ -29,6 +30,7 @@ class ClaudeSession:
         self._controls = {}
         self._permissions = {}
         self._permission_replies = {}
+        self._tool_names = {}
         self._reader = asyncio.create_task(self._dispatch(), name="claude-dispatch")
 
     @classmethod
@@ -173,8 +175,16 @@ class ClaudeSession:
                 for block in body['content']:
                     if not isinstance(block, dict) or block.get('type') != 'tool_result' or not isinstance(block.get('tool_use_id'), str):
                         raise TransportError('PROTOCOL_MALFORMED')
+                    content=block.get('content','')
+                    if isinstance(content,list):
+                        content='\n'.join(part.get('text','') for part in content
+                                          if isinstance(part,dict) and part.get('type')=='text')
+                    elif not isinstance(content,str):
+                        content=json.dumps(content,ensure_ascii=False) if content is not None else ''
                     self._emit('tool/result', turnId=self.turn_id, toolUseId=block['tool_use_id'],
-                               isError=block.get('is_error', False) is True)
+                               isError=block.get('is_error', False) is True,
+                               activity=self._tool_names.pop(block['tool_use_id'],'Claude tool'),
+                               detail=content[:8000])
                 return
             if (not self.turn_id or message.get("uuid") != self.turn_id
                     or message.get("isReplay") is not True
@@ -208,6 +218,9 @@ class ClaudeSession:
                 if block.get("type") == "text" and isinstance(block.get("text"), str):
                     self._emit("item/agentMessage/delta", turnId=self.turn_id, delta=block["text"])
                 elif block.get('type') == 'tool_use' and self.tools_enabled:
+                    tool_id=block.get('id')
+                    if isinstance(tool_id,str):
+                        self._tool_names[tool_id]=str(block.get('name') or 'Claude tool')[:160]
                     self._emit('tool/started', turnId=self.turn_id, toolUseId=block.get('id'), toolName=block.get('name'))
                 elif block.get("type") not in {"thinking", "redacted_thinking"}:
                     raise TransportError("CLAUDE_UNSUPPORTED_CONTENT")

@@ -55,6 +55,8 @@ for line in sys.stdin:
         result["subtype"] = "future_status"
     if mode == "tool":
         blocks = [{"type": "tool_use", "name": "Bash", "input": {}}]
+    elif mode == "tool-output":
+        blocks = [{"type": "tool_use", "id": "tool-1", "name": "Bash", "input": {"command": "pytest"}}]
     else:
         blocks = [{"type": "thinking", "thinking": "PRIVATE_CANARY"},
                   {"type": "text", "text": "公开回复：" + message["message"]["content"]}]
@@ -66,4 +68,10 @@ for line in sys.stdin:
         send({"type": "assistant", "session_id": sid, "parent_tool_use_id": None,
               "user_message_uuid": mid, "user_message_uuids": [mid],
               "message": {"role": "assistant", "content": blocks}})
+    if mode == "tool-output":
+        send({"type":"user","session_id":sid,"message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"tool-1","content":[{"type":"text","text":"tests passed"}],"is_error":False}]}})
+        send({"type":"assistant","session_id":sid,"parent_tool_use_id":None,
+              "user_message_uuid":mid,"user_message_uuids":[mid],
+              "message":{"role":"assistant","content":[{"type":"text","text":"Tests passed."}]}})
     send(result)

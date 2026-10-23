@@ -20,10 +20,11 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         self.core = Core(Path(self.temp.name) / "core.db")
         self.core.create_session("claude_test", "claude", key="session")
 
-    async def runtime(self, mode="normal", timeout=2):
+    async def runtime(self, mode="normal", timeout=2, tools_enabled=False):
         transport = await JsonLineProcess.start([sys.executable, "-u",
             str(ROOT / "tests/fixtures/claude_agent.py"), mode], cwd=ROOT)
-        adapter = ClaudeSession(transport, session_id="session_fixture", timeout=timeout)
+        adapter = ClaudeSession(transport, session_id="session_fixture", timeout=timeout,
+                                tools_enabled=tools_enabled)
         runtime = SessionRuntime(self.core, "claude_test", adapter)
         self.addAsyncCleanup(runtime.close)
         return runtime
@@ -100,6 +101,18 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         events = await self.finish(runtime, command)
         self.assertEqual("failed", self.core.command(command)["state"])
         self.assertNotIn("PRIVATE_CANARY", json.dumps(events) + json.dumps(self.core.events()))
+
+    async def test_tool_activity_and_result_are_available_to_live_console(self):
+        runtime=await self.runtime('tool-output',tools_enabled=True)
+        command=self.enqueue()
+        await runtime.send(command,'中文输入')
+        events=await self.finish(runtime,command)
+        started=next(event for event in events if event['method']=='tool/started')
+        result=next(event for event in events if event['method']=='tool/result')
+        self.assertEqual('Bash',started['params']['toolName'])
+        self.assertEqual('Bash',result['params']['activity'])
+        self.assertEqual('tests passed',result['params']['detail'])
+        self.assertEqual('completed',self.core.command(command)['state'])
 
     async def test_bad_result_or_tool_never_completes_command(self):
         for mode in ["wrong-session", "wrong-turn", "malformed-result", "unknown-result",

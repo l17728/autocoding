@@ -334,6 +334,8 @@ class Host:
                     text = self.streams[sid].feed(params.get('delta', ''))
                     if text:
                         self._output(sid, 'text', text=text)
+                elif method == 'tool/started':
+                    self._output(sid,'tool_started',activity=params.get('toolName'))
                 elif method == 'agent/question':
                     question = self.questions.register(sid,event)
                     self._output(sid,'question',question_id=question['id'])

@@ -114,7 +114,7 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(diagnostic,json.loads(stored['value'])['failure_diagnostic'])
         self.assertEqual(diagnostic,json.loads(event['payload'])['failure_diagnostic'])
 
-    async def test_concurrency_limit_and_failure_stop_new_dispatch(self):
+    async def test_concurrency_limit_and_failure_does_not_stop_new_dispatch(self):
         for tid in ['task_a','task_b','task_c']:
             self.task(tid)
         self.fail='task_a'
@@ -123,7 +123,11 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.release.set()
         await self.until(lambda:self.host.coordinator.current is None)
         self.assertEqual(2,self.peak)
-        self.assertEqual(['task_a','task_b'],[x[0] for x in self.started])
+        self.assertEqual(['task_a','task_b','task_c'],[x[0] for x in self.started])
+        with self.host.core.connection() as conn:
+            self.assertEqual('todo',self.host.core._get(conn,'tasks','task_a')['state'])
+            self.assertEqual('done',self.host.core._get(conn,'tasks','task_b')['state'])
+            self.assertEqual('done',self.host.core._get(conn,'tasks','task_c')['state'])
         self.assertEqual('rework_required',self.host.coordinator.list()[0]['state'])
         self.integrator.return_value.prepare.assert_not_called()
 
@@ -170,6 +174,22 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2,len(a))
         first=next(r for r in self.rows if r['task_id']=='task_a')
         self.assertEqual(first['head_sha'],a[1][2])
+
+    async def test_exhausted_task_does_not_stop_independent_ready_work(self):
+        self.task('task_a')
+        self.task('task_b')
+        self.fail='task_a'
+        self.release.set()
+        await self.host.coordinator.start(['task_a','task_b'],max_concurrency=1,max_attempts=2)
+        await self.until(lambda:self.host.coordinator.current is None)
+        self.assertEqual(['task_a','task_a','task_b'],[tid for tid,_,_ in self.started])
+        with self.host.core.connection() as conn:
+            self.assertEqual('todo',self.host.core._get(conn,'tasks','task_a')['state'])
+            self.assertEqual('done',self.host.core._get(conn,'tasks','task_b')['state'])
+        batch=self.host.coordinator.list()[0]
+        self.assertEqual('rework_required',batch['state'])
+        self.assertEqual('task_a',batch['stop_evidence'][0]['task_id'])
+        self.assertEqual('BATCH_ATTEMPT_LIMIT',batch['stop_evidence'][0]['reason'])
 
     async def test_restart_recovery_never_dispatches_past_batch_attempt_limit(self):
         self.task('task_a')

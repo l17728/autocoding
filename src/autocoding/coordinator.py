@@ -293,45 +293,45 @@ class Coordinator:
         running = {}
         retry_heads = {}
         preparation_waited = set()
-        stopped = None
+        task_stops = {}
         try:
             while True:
                 with self.core.connection() as conn:
                     tasks = {tid:dict(self.core._get(conn,'tasks',tid)) for tid in record['task_ids']}
                     pending = [t for t in tasks.values() if t['state'] != 'done']
-                    ready = [t for t in pending if t['id'] not in running and t['state']=='todo' and not conn.execute(
+                    ready = [t for t in pending if t['id'] not in running and t['id'] not in task_stops
+                             and t['state']=='todo' and not conn.execute(
                         "SELECT 1 FROM dependencies d JOIN tasks p ON p.id=d.depends_on WHERE d.task_id=? AND p.state!='done'",
                         (t['id'],)).fetchone()]
                 if not pending and not running:
                     break
-                if stopped and not running:
-                    reason=stopped[1]
-                    if reason=='BATCH_ATTEMPT_LIMIT':
-                        exhausted=[{'task_id':tid,'attempts':self.effective_attempts(record,tid),
-                                    'preparation_failures':self.git_preparation_failures(record,tid),
-                                    'latest_run_id':next((rid for rid in reversed(record['run_ids'])
-                                                         if next((r for r in self.host.workflow.list() if r['id']==rid),{}).get('task_id')==tid),None),
-                                    'failed_checks':next((r.get('failed_checks',[]) for r in reversed(self.host.workflow.list())
-                                                         if r.get('task_id')==tid),[])}
-                                   for tid in record['task_ids'] if self.effective_attempts(record,tid)>=record['max_attempts']]
-                        record['stop_evidence']=exhausted
-                    self.save(record,stopped[0],reason=reason,**stop_details(reason),active_tasks=[])
-                    return
-                if not ready and not running and not self.host.paused:
-                    raise DomainError('BATCH_TASKS_BLOCKED')
-                if not self.host.paused and not stopped:
+                if not ready and not running and not self.host.paused and pending:
+                    # An exhausted task must not strand unrelated ready work.
+                    # Once no task can make progress, record the dependency
+                    # frontier explicitly and finish with a durable stop.
+                    for task in pending:
+                        if task['id'] not in task_stops:
+                            with self.core.connection() as conn:
+                                blockers=[r['id'] for r in conn.execute(
+                                    "SELECT p.id FROM dependencies d JOIN tasks p ON p.id=d.depends_on "
+                                    "WHERE d.task_id=? AND p.state!='done' ORDER BY p.id",(task['id'],))]
+                            task_stops[task['id']]=('reconciling','BATCH_TASKS_BLOCKED',blockers)
+                    if not running:
+                        self.save_stopped_batch(record,task_stops)
+                        return
+                if not self.host.paused:
                     for task in ready:
                         if len(running)>=record.get('max_concurrency',1):
                             break
                         tid=task['id']
                         git_failures=self.git_preparation_failures(record,tid)
                         if git_failures>=self.MAX_GIT_PREPARATION_ATTEMPTS:
-                            stopped=('reconciling','GIT_UNAVAILABLE')
-                            break
+                            task_stops[tid]=('reconciling','GIT_UNAVAILABLE',[])
+                            continue
                         effective_attempts=self.effective_attempts(record,tid)
                         if effective_attempts>=record['max_attempts']:
-                            stopped=('rework_required','BATCH_ATTEMPT_LIMIT')
-                            break
+                            task_stops[tid]=('rework_required','BATCH_ATTEMPT_LIMIT',[])
+                            continue
                         if git_failures and tid not in preparation_waited:
                             # Git worktree scans can be slow when the host is
                             # under pressure. Back off once per safe retry;
@@ -368,7 +368,7 @@ class Coordinator:
                     completed=next(r for r in self.host.workflow.list() if r['id']==rid)
                     if completed['state']=='rework_required':
                         if self.effective_attempts(record,tid)>=record['max_attempts']:
-                            stopped=stopped or ('rework_required','BATCH_ATTEMPT_LIMIT')
+                            task_stops[tid]=('rework_required','BATCH_ATTEMPT_LIMIT',[])
                         else:
                             retry_heads[tid]=completed['head_sha']
                     elif completed['state']!='done':
@@ -381,7 +381,7 @@ class Coordinator:
                                 # agent attempt. The next loop creates a fresh
                                 # isolated worktree after bounded backoff.
                                 continue
-                            stopped=('reconciling','GIT_UNAVAILABLE')
+                            task_stops[tid]=('reconciling','GIT_UNAVAILABLE',[])
                             continue
                         # A provider timeout or a crashed runner has already
                         # been sealed as evidence by Workflow.  Retire that
@@ -398,11 +398,14 @@ class Coordinator:
                                 self.host.workflow.recover()
                                 recovered=next(r for r in self.host.workflow.list() if r['id']==rid)
                                 if recovered['state']!='reconciled':
-                                    stopped=('reconciling',completed.get('reason','RUN_RECONCILIATION_REQUIRED'))
+                                    task_stops[tid]=('reconciling',completed.get('reason','RUN_RECONCILIATION_REQUIRED'),[])
                             else:
-                                stopped=('reconciling',completed.get('reason','RUN_RECONCILIATION_REQUIRED'))
+                                task_stops[tid]=('reconciling',completed.get('reason','RUN_RECONCILIATION_REQUIRED'),[])
                         else:
-                            stopped=('reconciling',completed.get('reason','RUN_RECONCILIATION_REQUIRED'))
+                            task_stops[tid]=('reconciling',completed.get('reason','RUN_RECONCILIATION_REQUIRED'),[])
+            if task_stops:
+                self.save_stopped_batch(record,task_stops)
+                return
             self.save(record,'integrating',active_tasks=[])
             # A final incremental batch must integrate earlier verified task
             # heads as well. Do not execute any task outside the selected batch.
@@ -466,3 +469,19 @@ class Coordinator:
                     work.cancel()
             await asyncio.gather(*(work for _,work in running.values()),return_exceptions=True)
             self.current, self.reserved = None, {}
+
+    def save_stopped_batch(self, record, task_stops):
+        """Finish only after every runnable task had a chance to proceed."""
+        workflows=self.host.workflow.list()
+        evidence=[]
+        for tid,(state,reason,blocked_by) in task_stops.items():
+            latest=next((run for run in reversed(workflows) if run.get('task_id')==tid),{})
+            evidence.append({'task_id':tid,'state':state,'reason':reason,
+                'attempts':self.effective_attempts(record,tid),
+                'preparation_failures':self.git_preparation_failures(record,tid),
+                'latest_run_id':latest.get('id'),'failed_checks':latest.get('failed_checks',[]),
+                'blocked_by':blocked_by})
+        record['stop_evidence']=evidence
+        priority='reconciling' if any(item['state']=='reconciling' for item in evidence) else 'rework_required'
+        reason=next((item['reason'] for item in evidence if item['state']==priority),evidence[0]['reason'])
+        self.save(record,priority,reason=reason,**stop_details(reason),active_tasks=[])

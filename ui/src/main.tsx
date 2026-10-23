@@ -30,7 +30,7 @@ const empty: Snapshot = {tasks:[],sessions:[],approvals:[],latest_seq:0,paused:f
 const labels:Record<string,string> = {todo:'待执行',leased:'已领取',verifying:'验证中',done:'已验证',blocked:'已阻塞',cancelled:'已取消',ready:'就绪',reconciling:'等待对账',completed:'回合完成',failed:'执行失败',acknowledged:'已接收'};
 // Cards are an operational overview. The task console is the only place that
 // renders the captured, redacted payload verbatim.
-function eventSummary(event:Output) { if(event.type==='text')return '\u6536\u5230 Agent \u56de\u590d'; if(event.type==='receipt')return '\u5df2\u63a5\u6536 PM \u6307\u4ee4'; if(event.type==='completed')return '\u56de\u5408\u5b8c\u6210'; if(event.type==='tool_result')return (event.is_error?'\u5de5\u5177\u6b65\u9aa4\u5931\u8d25':'\u5de5\u5177\u6b65\u9aa4\u5df2\u5b8c\u6210')+(event.activity?' \u00b7 '+event.activity:''); return event.code||event.type; }
+function eventSummary(event:Output) { if(event.type==='text')return '\u6536\u5230 Agent \u56de\u590d'; if(event.type==='receipt')return '\u5df2\u63a5\u53d7 PM \u6307\u4ee4'; if(event.type==='completed')return '\u56de\u5408\u5b8c\u6210'; if(event.type==='tool_started')return '\u5f00\u59cb\u5de5\u5177\u6b65\u9aa4'+(event.activity?' \u00b7 '+event.activity:''); if(event.type==='tool_result')return (event.is_error?'\u5de5\u5177\u6b65\u9aa4\u5931\u8d25':'\u5de5\u5177\u6b65\u9aa4\u5df2\u5b8c\u6210')+(event.activity?' \u00b7 '+event.activity:''); return event.code||event.type; }
 function eventLabel(event:Output) { return event.type==='text'?(event.text||''):event.type==='tool_result'?eventSummary(event)+(event.detail?'\n'+event.detail:''):eventSummary(event); }
 
 function App() {
@@ -237,7 +237,7 @@ function TaskItem({task,run,disabled,start,agent}:{agent:string;task:Task;run?:R
 
 function TaskConsole({run,live}:{run?:Run;live:Output[]}) {
   const events=run?.conversation?.events?.length?run.conversation.events:live;
-  return <details className="task-console" open><summary>{'\u5b9e\u65f6\u6267\u884c\u63a7\u5236\u53f0'}</summary><div className="console-screen" role="log" aria-live="polite">{run?.conversation?.instruction&&<pre className="console-line input"><b>PM $</b> {run.conversation.instruction}</pre>}{events.map((event,index)=><pre className={'console-line '+event.type} key={`${event.seq}-${index}`}><b>{event.type==='text'?'Agent >':event.type==='tool_result'?'Tool  >':event.type==='error'?'Error >':'System>'}</b> {eventLabel(event)}</pre>)}{!run?.conversation?.instruction&&!events.length&&<pre className="console-line">{'\u6b63\u5728\u7b49\u5f85\u4f1a\u8bdd\u8f93\u51fa\u2026'}</pre>}</div></details>;
+  return <details className="task-console" open><summary>{'\u5b9e\u65f6\u6267\u884c\u63a7\u5236\u53f0'}</summary><div className="console-screen" role="log" aria-live="polite">{run?.conversation?.instruction&&<pre className="console-line input"><b>PM $</b> {run.conversation.instruction}</pre>}{events.map((event,index)=><pre className={'console-line '+event.type} key={`${event.seq}-${index}`}><b>{event.type==='text'?'Agent >':['tool_result','tool_started'].includes(event.type)?'Tool  >':event.type==='error'?'Error >':'System>'}</b> {eventLabel(event)}</pre>)}{!run?.conversation?.instruction&&!events.length&&<pre className="console-line">{'\u6b63\u5728\u7b49\u5f85\u4f1a\u8bdd\u8f93\u51fa\u2026'}</pre>}</div></details>;
 }
 
 function agentVisualStatus(health:AgentHealth|undefined,session:Session|undefined,task:Task|undefined,run:Run|undefined,messages:Output[]) {
