@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS requests (
 
 
 class Core:
+    SQLITE_BUSY_TIMEOUT_MS = 15000
+
     """One database per project in M1. Callers are trusted local code.
 
     Runner, HTTP auth, actual verification execution and outbox delivery are
@@ -91,10 +93,13 @@ class Core:
 
     @contextmanager
     def connection(self):
-        conn = sqlite3.connect(self.database, isolation_level=None, timeout=5)
+        # Agent workers and the API share the durable event ledger. Under disk
+        # pressure, let short competing writes finish before failing a live run.
+        conn = sqlite3.connect(self.database, isolation_level=None,
+                               timeout=self.SQLITE_BUSY_TIMEOUT_MS / 1000)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute(f"PRAGMA busy_timeout={self.SQLITE_BUSY_TIMEOUT_MS}")
         try:
             yield conn
         finally:
@@ -225,12 +230,15 @@ class Core:
                 or task["attempt"] != attempt or task["lease_until"] <= self.clock()):
             raise DomainError("STALE_LEASE")
 
-    def heartbeat(self, task_id, agent, token, attempt, *, key):
-        payload = dict(task=task_id, token_hash=digest(token), attempt=attempt)
+    def heartbeat(self, task_id, agent, token, attempt, *, key, lease_seconds=60):
+        payload = dict(task=task_id, token_hash=digest(token), attempt=attempt,
+                       lease_seconds=lease_seconds)
         def action(conn):
+            if not isinstance(lease_seconds, (int, float)) or not 0 < lease_seconds <= 3600:
+                raise DomainError("INVALID_LEASE")
             task = self._get(conn, "tasks", task_id)
             self._active_lease(task, agent, token, attempt)
-            expiry = self.clock() + 60
+            expiry = self.clock() + lease_seconds
             conn.execute("UPDATE tasks SET lease_until=? WHERE id=?", (expiry, task_id))
             self._event(conn, "LeaseRenewed", agent, task=task_id, lease_until=expiry)
             return {"lease_until": expiry}

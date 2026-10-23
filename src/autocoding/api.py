@@ -99,7 +99,7 @@ class DelegateInput(PlanInput):
 class RunInput(Body):
     agent: str = Field(default='claude', pattern='^(claude|codex|opencode)$')
     base_sha: str | None = Field(default=None, pattern=r'^([a-f0-9]{40}|[a-f0-9]{64})$')
-    max_seconds: int = Field(default=600, ge=1, le=3600)
+    max_seconds: int = Field(default=1800, ge=1, le=3600)
 
 class RecoveryInput(Body):
     fingerprint: str = Field(pattern='^[a-f0-9]{64}$')
@@ -268,6 +268,7 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
 
     @app.middleware('http')
     async def guard(request, call_next):
+        request_started=time.monotonic()
         if request.headers.get('host') != origin.split('://', 1)[1]:
             return error('HOST_REJECTED', 403)
         if request.headers.get('origin') not in (None, origin):
@@ -316,6 +317,20 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
         response.headers['Cache-Control'] = 'no-store'
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; object-src 'none'"
+        elapsed=time.monotonic()-request_started
+        if elapsed>=0.5:
+            def record_slow_request():
+                path=host.storage/'http-slow.jsonl'
+                try:
+                    if path.exists() and path.stat().st_size>1024*1024:
+                        path.replace(path.with_suffix('.jsonl.1'))
+                    with path.open('a',encoding='utf-8') as stream:
+                        stream.write(json.dumps({'at':time.time(),'method':request.method,
+                            'path':request.url.path,'status':response.status_code,
+                            'duration_ms':round(elapsed*1000,1)},ensure_ascii=False)+'\n')
+                except OSError:
+                    return
+            await asyncio.to_thread(record_slow_request)
         return response
 
     def owner(request: Request, project_id: str):
@@ -781,6 +796,11 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
     async def snapshot(task_offset: int = 0):
         from .dashboard import Dashboard
         return await asyncio.to_thread(Dashboard(host).snapshot, task_offset)
+
+    @app.get(prefix + '/liveness', dependencies=guarded)
+    async def liveness():
+        from .dashboard import Dashboard
+        return await asyncio.to_thread(Dashboard(host).liveness)
 
     @app.get(prefix+'/history/{kind}', dependencies=guarded)
     async def history(kind: str,offset: int = 0,limit: int = 100):

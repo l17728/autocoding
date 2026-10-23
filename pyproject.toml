@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]
-workbench = ["fastapi==0.143.0", "uvicorn==0.54.0", "httpx==0.28.1", "websockets==17.2", "pywinpty==3.0.5; sys_platform == 'win32'"]
+workbench = ["fastapi==0.143.0", "uvicorn==0.54.0", "httpx==0.28.1", "websockets==17.2", "pywinpty==3.0.5; sys_platform == 'win32'", "tzdata>=2024.1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 import sys
 import tempfile
@@ -135,6 +136,52 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         result=await self.run_task('timeout')
         self.assertEqual('reconciling',result['state'])
         self.assertEqual('RUN_TIMEOUT_RECONCILIATION_REQUIRED',result['reason'])
+
+    async def test_failure_saves_bounded_redacted_diagnostic(self):
+        with patch.object(self.host.workspaces,'create',side_effect=sqlite3.OperationalError(
+                'database is locked token=private-value')):
+            started=await self.host.workflow.start('task_a')
+            await self.host.workflow.active['task_a']
+        result=next(r for r in self.host.workflow.list() if r['id']==started['id'])
+        self.assertEqual('OperationalError',result['error_type'])
+        self.assertEqual('database is locked token=[REDACTED]',result['error_message'])
+        self.assertLessEqual(len(result['error_message']),500)
+        with self.host.core.connection() as conn:
+            event=conn.execute("SELECT payload FROM events WHERE type='TaskInterruptionRecorded' "
+                               "AND json_extract(payload,'$.run_id')=?",(started['id'],)).fetchone()
+        payload=json.loads(event['payload'])
+        self.assertEqual('platform_auto_repair',payload['recovery_policy'])
+        self.assertEqual('database is locked token=[REDACTED]',payload['error_message'])
+
+    async def test_token_limit_interruption_is_marked_as_external_wait(self):
+        from autocoding.workflow import interruption_policy
+        self.assertEqual('external_wait_or_rotate',interruption_policy('LLM_TOKEN_LIMIT'))
+
+    async def test_lease_heartbeat_runs_while_agent_startup_is_waiting(self):
+        self.provider()
+        start=self.host.start
+        async def delayed_start(*args, **kwargs):
+            await asyncio.sleep(.08)
+            return await start(*args, **kwargs)
+        self.host.start=delayed_start
+        with patch.object(self.host.workflow,'LEASE_HEARTBEAT_INTERVAL',.02):
+            initial=await self.host.workflow.start('task_a',max_seconds=2)
+            await self.host.workflow.active['task_a']
+        renewals=[e for e in self.host.core.events()
+                  if e['type']=='LeaseRenewed' and e['task_id']=='task_a']
+        self.assertGreaterEqual(len(renewals),2)
+        self.assertEqual('done',next(r for r in self.host.workflow.list()
+                                     if r['id']==initial['id'])['state'])
+
+    async def test_run_deadline_also_covers_agent_startup(self):
+        async def never_ready(*args, **kwargs):
+            await asyncio.sleep(2)
+        self.host.start=never_ready
+        initial=await self.host.workflow.start('task_a',max_seconds=1)
+        await self.host.workflow.active['task_a']
+        result=next(r for r in self.host.workflow.list() if r['id']==initial['id'])
+        self.assertEqual('RUN_TIMEOUT_RECONCILIATION_REQUIRED',result['reason'])
+        self.assertEqual('blocked',self.host.core.snapshot()['tasks'][0]['state'])
 
     async def test_modified_acceptance_file_is_rejected_before_commit(self):
         result=await self.run_task('protected')

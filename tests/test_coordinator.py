@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from autocoding.host import Host
-from autocoding.core import DomainError, encoded
+from autocoding.core import DomainError, digest, encoded
 from closure_support import integration_evidence
 
 
@@ -102,6 +102,18 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1,len(self.host.closure.list()))
         self.assertEqual(4,len(self.host.closure.list()[0]['tasks']))
 
+    async def test_batch_failure_persists_redacted_diagnostic(self):
+        import json
+        record={'id':'batch_diagnostic','task_ids':[],'attempts':{},'run_ids':[]}
+        diagnostic={'error_type':'RuntimeError',
+                    'message':self.host.redactor.text('COORDINATOR_TEST_FAILURE')[:500]}
+        self.host.coordinator.save(record,'failed',reason='BATCH_FAILED',failure_diagnostic=diagnostic)
+        with self.host.core.connection() as conn:
+            stored=conn.execute("SELECT value FROM metadata WHERE key='batch:batch_diagnostic'").fetchone()
+            event=conn.execute("SELECT payload FROM events WHERE type='TaskBatchChanged' ORDER BY seq DESC LIMIT 1").fetchone()
+        self.assertEqual(diagnostic,json.loads(stored['value'])['failure_diagnostic'])
+        self.assertEqual(diagnostic,json.loads(event['payload'])['failure_diagnostic'])
+
     async def test_concurrency_limit_and_failure_stop_new_dispatch(self):
         for tid in ['task_a','task_b','task_c']:
             self.task(tid)
@@ -159,6 +171,43 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         first=next(r for r in self.rows if r['task_id']=='task_a')
         self.assertEqual(first['head_sha'],a[1][2])
 
+    async def test_restart_recovery_never_dispatches_past_batch_attempt_limit(self):
+        self.task('task_a')
+        _,checks,protected=self.configuration('task_a')
+        record={'id':'batch_recovered','task_ids':['task_a'],'created_at':1,'base_sha':'a'*40,
+                'provider':'codex','max_attempts':2,'run_ids':[],
+                'attempts':{'task_a':2},'agents':['codex'],'max_concurrency':1,
+                'assignments':{'task_a':'codex'}}
+        self.host.coordinator.save(record,'queued')
+        await self.host.coordinator._perform(record,
+            {'task_a':digest({'checks':checks,'protected_paths':protected})},checks)
+        self.assertEqual([],self.started)
+        self.assertEqual('rework_required',record['state'])
+        self.assertEqual('BATCH_ATTEMPT_LIMIT',record['reason'])
+
+    async def test_persisted_match_detects_retry_with_unchanged_active_task_set(self):
+        record={'id':'batch_retry','task_ids':['task_a'],'attempts':{'task_a':1},
+                'run_ids':['run_first'],'max_attempts':3}
+        self.host.coordinator.save(record,'running',active_tasks=['task_a'])
+        self.assertTrue(self.host.coordinator.persisted_matches(record,'running',['task_a']))
+        record['attempts']['task_a']=2
+        record['run_ids'].append('run_second')
+        self.assertFalse(self.host.coordinator.persisted_matches(record,'running',['task_a']))
+
+    async def test_git_setup_failures_count_only_before_workspace_and_agent_handoff(self):
+        record={'run_ids':['run_a','run_b','run_c']}
+        self.rows.extend([
+            {'id':'run_a','task_id':'task_a','state':'failed','reason':'GIT_UNAVAILABLE',
+             'error_phase':'preparing'},
+            {'id':'run_b','task_id':'task_a','state':'failed','reason':'GIT_UNAVAILABLE',
+             'error_phase':'preparing','workspace_id':'workspace_created'},
+            {'id':'run_c','task_id':'task_a','state':'failed','reason':'GIT_UNAVAILABLE',
+             'error_phase':'preparing','session_id':'session_started'},
+        ])
+        self.assertEqual(1,self.host.coordinator.git_preparation_failures(record,'task_a'))
+        record['attempts']={'task_a':3}
+        self.assertEqual(2,self.host.coordinator.effective_attempts(record,'task_a'))
+
     async def test_reconciliation_creates_fresh_bounded_attempt(self):
         self.task('task_a')
         self.reconcile='task_a'
@@ -201,6 +250,15 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
                           'provider':'claude','reason':'RPC_TIMEOUT_DELIVERY_UNKNOWN'})
         record={'assignments':{'task_a':'claude'},'agents':['claude','codex'],
                 'attempts':{'task_a':2}}
+        self.assertTrue(self.host.coordinator.fallback_provider(record,'task_a'))
+        self.assertEqual('codex',record['assignments']['task_a'])
+
+    async def test_delivery_unknown_falls_back_to_another_configured_provider(self):
+        self.rows.append({'id':'run_delivery','task_id':'task_a','state':'reconciled',
+                          'provider':'claude','reason':'RESTART_NEW_ATTEMPT',
+                          'reconciliation_reason':'RUN_DELIVERY_RECONCILIATION_REQUIRED'})
+        record={'assignments':{'task_a':'claude'},'agents':['claude','codex','opencode'],
+                'attempts':{'task_a':1}}
         self.assertTrue(self.host.coordinator.fallback_provider(record,'task_a'))
         self.assertEqual('codex',record['assignments']['task_a'])
 

@@ -26,6 +26,8 @@ def stop_details(reason):
 
 
 class Coordinator:
+    MAX_GIT_PREPARATION_ATTEMPTS = 3
+
     def __init__(self, host):
         self.host, self.core = host, host.core
         self.current = None
@@ -111,7 +113,11 @@ class Coordinator:
         with self.core.connection() as conn:
             conn.execute('BEGIN IMMEDIATE')
             conn.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)', ('batch:' + record['id'], encoded(record)))
-            self.core._event(conn,'TaskBatchChanged','pm',batch_id=record['id'],state=state,task_ids=record['task_ids'])
+            self.core._event(conn,'TaskBatchChanged','pm',batch_id=record['id'],state=state,
+                             task_ids=record['task_ids'],reason=record.get('reason'),
+                             active_tasks=record.get('active_tasks',[]),attempts=record.get('attempts',{}),
+                             stop_category=record.get('stop_category'),
+                             failure_diagnostic=record.get('failure_diagnostic'))
             conn.commit()
 
     def persisted_matches(self, record, state, active_tasks):
@@ -121,7 +127,22 @@ class Coordinator:
         if not row:
             return False
         current=json.loads(row['value'])
-        return current.get('state')==state and current.get('active_tasks',[])==active_tasks
+        return (current.get('state')==state and current.get('active_tasks',[])==active_tasks
+                and current.get('attempts',{})==record.get('attempts',{})
+                and current.get('run_ids',[])==record.get('run_ids',[]))
+
+    def git_preparation_failures(self, record, task_id):
+        """Count only failures proven to precede workspace handoff/provider work."""
+        run_ids=set(record.get('run_ids',[]))
+        return sum(1 for run in self.host.workflow.list()
+                   if run.get('id') in run_ids and run.get('task_id')==task_id
+                   and run.get('state')=='failed' and run.get('reason')=='GIT_UNAVAILABLE'
+                   and run.get('error_phase')=='preparing' and not run.get('workspace_id')
+                   and not run.get('session_id') and not run.get('command_ids'))
+
+    def effective_attempts(self, record, task_id):
+        return max(0, record.get('attempts',{}).get(task_id,0)
+                   - self.git_preparation_failures(record,task_id))
 
     def pm_owned_input_takeover(self, run):
         """Return whether the most recent input owner for this run is PM.
@@ -168,7 +189,7 @@ class Coordinator:
         # It is still an uncertain old delivery, never a reason to strand an
         # autonomous batch or replay the same session.
         generic_runner_failure=(upper.startswith(('RUN_TIMEOUT_','RUN_DELIVERY_','RPC_TIMEOUT_','RPC_DELIVERY_')) or pm_takeover)
-        if not (external_failure or pm_takeover) or not (attributed or generic_runner_failure):
+        if not (external_failure or pm_takeover or generic_runner_failure) or not (attributed or generic_runner_failure):
             return False
         tried=set(record.get('provider_attempts',{}).get(task_id,[]))
         tried.add(current)
@@ -271,6 +292,7 @@ class Coordinator:
     async def _perform(self, record, policies, checks):
         running = {}
         retry_heads = {}
+        preparation_waited = set()
         stopped = None
         try:
             while True:
@@ -283,7 +305,17 @@ class Coordinator:
                 if not pending and not running:
                     break
                 if stopped and not running:
-                    self.save(record,stopped[0],reason=stopped[1],active_tasks=[])
+                    reason=stopped[1]
+                    if reason=='BATCH_ATTEMPT_LIMIT':
+                        exhausted=[{'task_id':tid,'attempts':self.effective_attempts(record,tid),
+                                    'preparation_failures':self.git_preparation_failures(record,tid),
+                                    'latest_run_id':next((rid for rid in reversed(record['run_ids'])
+                                                         if next((r for r in self.host.workflow.list() if r['id']==rid),{}).get('task_id')==tid),None),
+                                    'failed_checks':next((r.get('failed_checks',[]) for r in reversed(self.host.workflow.list())
+                                                         if r.get('task_id')==tid),[])}
+                                   for tid in record['task_ids'] if self.effective_attempts(record,tid)>=record['max_attempts']]
+                        record['stop_evidence']=exhausted
+                    self.save(record,stopped[0],reason=reason,**stop_details(reason),active_tasks=[])
                     return
                 if not ready and not running and not self.host.paused:
                     raise DomainError('BATCH_TASKS_BLOCKED')
@@ -292,6 +324,21 @@ class Coordinator:
                         if len(running)>=record.get('max_concurrency',1):
                             break
                         tid=task['id']
+                        git_failures=self.git_preparation_failures(record,tid)
+                        if git_failures>=self.MAX_GIT_PREPARATION_ATTEMPTS:
+                            stopped=('reconciling','GIT_UNAVAILABLE')
+                            break
+                        effective_attempts=self.effective_attempts(record,tid)
+                        if effective_attempts>=record['max_attempts']:
+                            stopped=('rework_required','BATCH_ATTEMPT_LIMIT')
+                            break
+                        if git_failures and tid not in preparation_waited:
+                            # Git worktree scans can be slow when the host is
+                            # under pressure. Back off once per safe retry;
+                            # these failures happened before an agent received
+                            # work, so they do not consume its attempt budget.
+                            await asyncio.sleep(min(5 * (2 ** (git_failures-1)),60))
+                            preparation_waited.add(tid)
                         _, selected, protected = self.host.workflow.configuration(tid)
                         if digest({'checks':selected,'protected_paths':protected}) != policies[tid]:
                             raise DomainError('OWNER_CHECK_CONFIGURATION_CHANGED')
@@ -320,11 +367,22 @@ class Coordinator:
                     del running[tid]
                     completed=next(r for r in self.host.workflow.list() if r['id']==rid)
                     if completed['state']=='rework_required':
-                        if record['attempts'][tid]>=record['max_attempts']:
+                        if self.effective_attempts(record,tid)>=record['max_attempts']:
                             stopped=stopped or ('rework_required','BATCH_ATTEMPT_LIMIT')
                         else:
                             retry_heads[tid]=completed['head_sha']
                     elif completed['state']!='done':
+                        if (completed['state']=='failed' and completed.get('reason')=='GIT_UNAVAILABLE'
+                                and completed.get('error_phase')=='preparing'
+                                and not completed.get('workspace_id') and not completed.get('session_id')
+                                and not completed.get('command_ids')):
+                            if self.git_preparation_failures(record,tid)<self.MAX_GIT_PREPARATION_ATTEMPTS:
+                                # This is a platform setup failure, not a code
+                                # agent attempt. The next loop creates a fresh
+                                # isolated worktree after bounded backoff.
+                                continue
+                            stopped=('reconciling','GIT_UNAVAILABLE')
+                            continue
                         # A provider timeout or a crashed runner has already
                         # been sealed as evidence by Workflow.  Retire that
                         # attempt and make a fresh one within the batch's
@@ -336,7 +394,7 @@ class Coordinator:
                             # budget. Do not strand a recoverable batch merely
                             # because an adapter became healthy after a timeout.
                             changed=self.fallback_provider(record,tid)
-                            if changed or record['attempts'][tid] < record['max_attempts']:
+                            if changed or self.effective_attempts(record,tid) < record['max_attempts']:
                                 self.host.workflow.recover()
                                 recovered=next(r for r in self.host.workflow.list() if r['id']==rid)
                                 if recovered['state']!='reconciled':
@@ -399,7 +457,9 @@ class Coordinator:
             raise
         except Exception as exc:
             reason=getattr(exc,'code','BATCH_FAILED')
-            self.save(record,'failed',reason=reason,**stop_details(reason))
+            diagnostic={'error_type':type(exc).__name__,
+                        'message':self.host.redactor.text(str(exc))[:500]}
+            self.save(record,'failed',reason=reason,failure_diagnostic=diagnostic,**stop_details(reason))
         finally:
             for _,work in running.values():
                 if not work.done():

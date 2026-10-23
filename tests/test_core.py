@@ -141,6 +141,15 @@ class CoreTests(unittest.TestCase):
         self.now += 20
         self.assertEqual("verifying", self.report(lease)["state"])
 
+    def test_heartbeat_can_extend_lease_for_slow_systems(self):
+        self.task()
+        lease = self.core.claim("task_one", "agent:a", lease_seconds=180, key="claim_long")
+        self.now += 170
+        self.core.heartbeat("task_one", "agent:a", lease["lease_token"], 1,
+                            key="heartbeat_long", lease_seconds=180)
+        self.now += 170
+        self.assertEqual("verifying", self.report(lease)["state"])
+
     def test_cancel_during_verification_rejects_late_result(self):
         self.task()
         job = self.report(self.claim())

@@ -11,6 +11,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 from autocoding.core import Core, DomainError
+from autocoding.redaction import Redactor
 from autocoding.verifier import Verifier, execute
 from autocoding.workspaces import Workspaces, git
 
@@ -47,9 +48,19 @@ class VerifierTests(unittest.TestCase):
         self.assertEqual(self.sha, artifact['job']['head_sha'])
 
     def test_failure_returns_task_for_rework(self):
-        report = self.verifier('raise SystemExit(7)').run(self.job)
+        report = self.verifier("import sys; print('failure detail', file=sys.stderr); raise SystemExit(7)").run(self.job)
         self.assertEqual('todo', report['state'])
         self.assertEqual(7, report['checks']['unit']['exit_code'])
+        self.assertIn('failure detail', report['checks']['unit']['streams']['stderr']['excerpt'])
+
+    def test_failure_excerpt_is_bounded_and_redacted(self):
+        code = "print('PRIVATE_CANARY'); print('x' * 20000); raise SystemExit(2)"
+        report = execute([sys.executable, '-c', code], self.repo,
+                         redactor=Redactor(['PRIVATE_CANARY']))
+        serialized = json.dumps(report)
+        self.assertNotIn('PRIVATE_CANARY', serialized)
+        self.assertLessEqual(len(report['streams']['stdout']['excerpt']), 16384)
+        self.assertTrue(report['streams']['stdout']['excerpt_truncated'])
 
     def test_modified_tracked_files_cannot_pass(self):
         report = self.verifier("from pathlib import Path; Path('module.py').write_text('value = 0')").run(self.job)

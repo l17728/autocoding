@@ -17,7 +17,20 @@ from .completion import checkpoint
 FINAL = {'done', 'rework_required', 'reconciling', 'reconciled', 'failed'}
 
 
+def interruption_policy(reason, error_message=''):
+    evidence = f'{reason} {error_message}'.upper()
+    if any(marker in evidence for marker in ('TOKEN_LIMIT', 'RATE_LIMIT', 'QUOTA', 'CONNECTION_LOST',
+                                              'NETWORK_UNAVAILABLE', 'DNS_FAILURE', 'TLS_FAILURE')):
+        return 'external_wait_or_rotate'
+    if any(marker in evidence for marker in ('OWNER_APPROVAL_REQUIRED', 'BUSINESS_AMBIGUITY')):
+        return 'owner_input_required'
+    return 'platform_auto_repair'
+
+
 class Workflow:
+    LEASE_SECONDS = 180
+    LEASE_HEARTBEAT_INTERVAL = 30
+
     def __init__(self, host):
         self.host, self.core = host, host.core
         self.active = {}
@@ -30,12 +43,24 @@ class Workflow:
         return sorted(rows, key=lambda r: r.get('created_at', 0))
 
     def save(self, record, state, **values):
+        previous_state = record.get('state')
         record.update(state=state, **values)
         with self.core.connection() as conn:
             conn.execute('BEGIN IMMEDIATE')
             conn.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)', ('run:' + record['id'], encoded(record)))
             self.core._event(conn, 'TaskRunChanged', 'runner', task=record['task_id'],
                              run_id=record['id'], state=state, reason=record.get('reason'))
+            if (state in {'failed', 'reconciling', 'rework_required'} and
+                    previous_state != state):
+                reason = record.get('reason') or (
+                    'ACCEPTANCE_FAILED' if record.get('failed_checks') else 'UNSPECIFIED')
+                message = self.host.redactor.text(record.get('error_message') or '')[:500]
+                self.core._event(conn, 'TaskInterruptionRecorded', 'runner',
+                    incident_id=record['id'], run_id=record['id'], task=record['task_id'],
+                    provider=record.get('provider'), state=state, phase=record.get('error_phase') or record.get('phase'),
+                    reason=reason, error_type=record.get('error_type'), error_message=message,
+                    failed_checks=record.get('failed_checks', []),
+                    recovery_policy=interruption_policy(reason, message))
             conn.commit()
 
     def block(self, record, reason):
@@ -103,7 +128,7 @@ class Workflow:
         except (OSError, ValueError, KeyError, TypeError):
             raise DomainError('OWNER_CHECK_CONFIGURATION_REQUIRED') from None
 
-    async def start(self, task_id, *, base_sha=None, max_seconds=600, batch_id=None, agent='claude'):
+    async def start(self, task_id, *, base_sha=None, max_seconds=1800, batch_id=None, agent='claude'):
         if agent not in {'claude','codex','opencode'}:
             raise DomainError('UNSUPPORTED_AGENT')
         if self.host.paused:
@@ -196,6 +221,8 @@ class Workflow:
     async def _perform(self, record, task, checks, dependencies, max_seconds):
         lease = None
         runtime = None
+        lease_heartbeat = None
+        deadline = None
         try:
             workspace = await asyncio.to_thread(self.host.workspaces.create, self.host.root, record['base_sha'], branch=True)
             root = Path(workspace['path'])
@@ -205,15 +232,26 @@ class Workflow:
                     '-c', 'user.email=runner@localhost', '-c', 'commit.gpgSign=false',
                     'merge', '--no-edit', '--no-ff', '--no-verify', dep['head_sha'])
             base = await asyncio.to_thread(git, root, 'rev-parse', 'HEAD')
-            lease = self.core.claim(record['task_id'], record['agent_id'], lease_seconds=120, key=record['id'])
+            lease = self.core.claim(record['task_id'], record['agent_id'],
+                                    lease_seconds=self.LEASE_SECONDS, key=record['id'])
             self.save(record, 'starting', attempt=lease['attempt'], execution_base=base)
-            session = await self.host.start(record.get('provider','claude'), workspace_id=workspace['id'], tools=True,
-                task_scope={'task_id':record['task_id'], 'agent_id':record['agent_id'], 'attempt':lease['attempt']})
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + max_seconds
+            lease_heartbeat = asyncio.create_task(self._keep_lease(record, lease))
+
+            async def within_deadline(awaitable):
+                try:
+                    return await asyncio.wait_for(awaitable, timeout=max(0.001, deadline-loop.time()))
+                except TimeoutError:
+                    raise DomainError('RUN_TIMEOUT_RECONCILIATION_REQUIRED') from None
+
+            session = await within_deadline(self.host.start(record.get('provider','claude'), workspace_id=workspace['id'], tools=True,
+                task_scope={'task_id':record['task_id'], 'agent_id':record['agent_id'], 'attempt':lease['attempt']}))
             sid = session['session_id']
             self.save(record, 'starting', session_id=sid)
             runtime = self.host.runtimes[sid]
             self.guards[sid] = (root, record['protected_paths'])
-            takeover = await runtime.takeover('pm', 0, key='run-owner:' + record['id'])
+            takeover = await within_deadline(runtime.takeover('pm', 0, key='run-owner:' + record['id']))
             epoch = takeover['epoch']
             prompt = ('完成以下开发任务，仅修改当前工作树内的业务文件。不要提交 Git；平台会提交并运行独立验收。'
                       '不得修改受保护的验收文件。需要澄清时提出结构化问题，由 PM 或用户回答。完成修改后说明结果。\n' +
@@ -224,16 +262,20 @@ class Workflow:
                              and r['state']=='rework_required'), None)
             if previous:
                 prompt += '\n上次独立验收未通过的检查：' + encoded(previous.get('failed_checks',[]))
-            command = await self.host.send(sid, epoch, prompt, key='run-input:' + record['id'], sender='pm')
+            command = await within_deadline(self.host.send(sid, epoch, prompt,
+                key='run-input:' + record['id'], sender='pm'))
             self.save(record, 'running', session_id=sid, command_id=command['command_id'],
                       command_ids=[command['command_id']],completion_checks=[],phase='implementation')
-            loop = asyncio.get_running_loop()
-            deadline, renewed = loop.time() + max_seconds, loop.time()
             while True:
                 with self.core.connection() as conn:
                     current = self.core._get(conn, 'sessions', sid)
                     if current['owner'] != 'pm' or current['epoch'] != epoch:
                         raise DomainError('RUN_INPUT_TAKEN_OVER')
+                if lease_heartbeat.done():
+                    lease_error=lease_heartbeat.exception()
+                    if lease_error:
+                        raise lease_error
+                    raise DomainError('LEASE_HEARTBEAT_STOPPED')
                 state = self.core.command(command['command_id'])['state']
                 if state == 'completed':
                     if any(s==sid for s,_ in self.host.deliveries) or self.unresolved_interactions(sid):
@@ -245,18 +287,14 @@ class Workflow:
                         raise DomainError('RUN_TIMEOUT_RECONCILIATION_REQUIRED')
                     # Pausing stops new turns, even when the previous one completed.
                     if self.host.paused:
-                        if loop.time()-renewed>=20:
-                            self.core.heartbeat(record['task_id'],record['agent_id'],lease['lease_token'],
-                                lease['attempt'],key='run-heartbeat:'+uuid.uuid4().hex)
-                            renewed=loop.time()
                         await asyncio.sleep(.1)
                         continue
                     name,instruction=next_check
-                    command=await self.host.send(sid,epoch,instruction+'\n'+encoded({
+                    command=await within_deadline(self.host.send(sid,epoch,instruction+'\n'+encoded({
                         'task_id':record['task_id'],'task':task['description'],
                         'acceptance':json.loads(task['acceptance']),
                         'protected_paths':record['protected_paths']}),
-                        key='run-checkpoint:'+record['id']+':'+name,sender='pm')
+                        key='run-checkpoint:'+record['id']+':'+name,sender='pm'))
                     record['completion_checks'].append({'name':name,'command_id':command['command_id']})
                     record['command_ids'].append(command['command_id'])
                     self.save(record,'reviewing',phase=name,command_id=command['command_id'])
@@ -265,10 +303,6 @@ class Workflow:
                     raise DomainError('RUN_DELIVERY_RECONCILIATION_REQUIRED')
                 if loop.time() >= deadline:
                     raise DomainError('RUN_TIMEOUT_RECONCILIATION_REQUIRED')
-                if loop.time() - renewed >= 20:
-                    self.core.heartbeat(record['task_id'], record['agent_id'], lease['lease_token'],
-                        lease['attempt'], key='run-heartbeat:' + uuid.uuid4().hex)
-                    renewed = loop.time()
                 await asyncio.sleep(.1)
             # Seal the input arbiter before committing so a late takeover cannot
             # race the task's final filesystem snapshot.
@@ -296,8 +330,15 @@ class Workflow:
                 raise DomainError('RUN_INTERACTION_RECONCILIATION_REQUIRED')
             if any(s == sid for s, _ in self.host.deliveries):
                 raise DomainError('RUN_APPROVAL_RECONCILIATION_REQUIRED')
+            lease_heartbeat.cancel()
+            try:
+                await lease_heartbeat
+            except asyncio.CancelledError:
+                pass
+            lease_heartbeat=None
             self.core.heartbeat(record['task_id'], record['agent_id'], lease['lease_token'],
-                                lease['attempt'], key='run-final-heartbeat:' + record['id'])
+                                lease['attempt'], key='run-final-heartbeat:' + record['id'],
+                                lease_seconds=self.LEASE_SECONDS)
             self.save(record, 'committing')
             await asyncio.to_thread(self.check_policy,record)
             if await asyncio.to_thread(git, root, 'rev-parse', 'HEAD') != base:
@@ -315,24 +356,48 @@ class Workflow:
             job = self.core.report(record['task_id'], record['agent_id'], lease['lease_token'], lease['attempt'],
                                    head, ['commit:' + head], key='run-report:' + record['id'])
             self.save(record, 'verifying', head_sha=head)
-            verifier = Verifier(self.core, self.host.root, self.host.storage / 'verification', checks)
+            verifier = Verifier(self.core, self.host.root, self.host.storage / 'verification', checks,
+                                redactor=self.host.redactor)
             result = await asyncio.to_thread(verifier.run, job, guard=lambda:self.check_policy(record))
             self.save(record, 'done' if result['state'] == 'done' else 'rework_required',
                       artifact=result['artifact'], artifact_sha256=result['sha256'],
-                      failed_checks=[name for name, value in result['checks'].items() if not value['passed']])
+                      failed_checks=[name for name, value in result['checks'].items() if not value['passed']],
+                      check_diagnostics={name: {key: value.get(key) for key in ('status','exit_code','duration_seconds','streams')}
+                                         for name, value in result['checks'].items() if not value['passed']})
         except asyncio.CancelledError:
             self.block(record, 'RUN_CANCELLED_RECONCILIATION_REQUIRED')
             raise
         except Exception as exc:
-            code = getattr(exc, 'code', 'RUN_FAILED')
+            code = getattr(exc, 'code', 'RUN_TIMEOUT_RECONCILIATION_REQUIRED'
+                           if isinstance(exc, TimeoutError) else 'RUN_FAILED')
             record['error_type']=type(exc).__name__
+            # Preserve enough redacted context to distinguish storage contention,
+            # provider failures and timeouts after the worker has recovered.
+            record['error_message']=self.host.redactor.text(str(exc))[:500]
+            record['error_phase']=record.get('phase', record.get('state'))
             if lease:
                 self.block(record, code)
             else:
                 self.save(record, 'failed', reason=code)
         finally:
             try:
+                if lease_heartbeat:
+                    lease_heartbeat.cancel()
+                    await asyncio.gather(lease_heartbeat, return_exceptions=True)
                 if runtime:
                     await runtime.close()
             finally:
                 self.active.pop(record['task_id'], None)
+
+    async def _keep_lease(self, record, lease):
+        while True:
+            await asyncio.sleep(self.LEASE_HEARTBEAT_INTERVAL)
+            renewal=asyncio.create_task(asyncio.to_thread(self.core.heartbeat,
+                record['task_id'], record['agent_id'],
+                lease['lease_token'], lease['attempt'], key='run-heartbeat:'+uuid.uuid4().hex,
+                lease_seconds=self.LEASE_SECONDS))
+            try:
+                await asyncio.shield(renewal)
+            except asyncio.CancelledError:
+                await asyncio.gather(renewal, return_exceptions=True)
+                raise

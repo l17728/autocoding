@@ -68,12 +68,16 @@ def main():
         return 2
     counts = {}
     def drain(stream, name):
-        sha, size = hashlib.sha256(), 0
+        sha, size, excerpt = hashlib.sha256(), 0, bytearray()
         while chunk := stream.read(8192):
             sha.update(chunk)
             size += len(chunk)
+            if len(excerpt) < 16384:
+                excerpt.extend(chunk[:16384-len(excerpt)])
         stream.close()
-        counts[name] = {'bytes': size, 'sha256': sha.hexdigest()}
+        counts[name] = {'bytes': size, 'sha256': sha.hexdigest(),
+                        'excerpt': bytes(excerpt).decode('utf-8', errors='replace'),
+                        'excerpt_truncated': size > len(excerpt)}
     readers = [threading.Thread(target=drain, args=(stream, name), daemon=True)
                for stream, name in [(process.stdout, 'stdout'), (process.stderr, 'stderr')]]
     for reader in readers:

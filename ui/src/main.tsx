@@ -17,7 +17,7 @@ import {readResponse} from './api';
 
 type Session = {id:string; agent:string; state:string; owner:string; epoch:number};
 type Task = {id:string; description:string; state:string; attempt:number; agent?:string; reason?:string};
-type Run = {id:string; task_id:string; state:string; provider?:string; session_id?:string; phase?:string; head_sha?:string; reason?:string; artifact_sha256?:string; conversation?:{instruction:string;events:Output[]}};
+type Run = {id:string; task_id:string; state:string; provider?:string; session_id?:string; phase?:string; head_sha?:string; reason?:string; artifact_sha256?:string; check_diagnostics?:Record<string,{status?:string;exit_code?:number;duration_seconds?:number;streams?:Record<string,{bytes?:number;sha256?:string;excerpt?:string;excerpt_truncated?:boolean}>}>; conversation?:{instruction:string;events:Output[]}};
 type AgentQuestion = {id:string; state:string; answered_by?:string; reason?:string; answers?:string[][]; questions:{id:string;question:string;options:{label:string;description:string}[];multiple:boolean;custom:boolean;secret:boolean}[]};
 type Batch = {id:string;state:string;reason?:string;stop_category?:string;owner_next_action?:string;candidate_sha?:string;completion_inventory?:{outside_scope_remaining:string[]}};
 type Approval = {id:string; state:string; session_id:string; revision:number; operation_hash:string};
@@ -71,11 +71,11 @@ function App() {
     if(!response)throw new Error('本机服务尚未恢复连接；PM 已保留检查点，将自动继续重连。');
     return readResponse(response);
   }
-  async function refresh() {
+  async function refreshSnapshot() {
     if (!project) return;
     const version=generation.current,sequence=++refreshSequence.current;
-    let state:Snapshot,messages:any;
-    try {[state,messages]=await Promise.all([api(prefix+'/snapshot'+(taskOffset?'?task_offset='+taskOffset:'')),api(prefix+`/output?after=${cursor.current}`)]);}catch(e){
+    let state:Snapshot;
+    try {state=await api(prefix+'/snapshot'+(taskOffset?'?task_offset='+taskOffset:''));}catch(e){
       if(version!==generation.current||sequence!==refreshSequence.current)return;
       setConnected(false);throw e;
     }
@@ -83,10 +83,23 @@ function App() {
     setConnected(true);
     setError(old=>old.startsWith('本机服务尚未恢复连接')?'':old);
     setSnapshot(state);
+  }
+  async function refreshOutput() {
+    if (!project) return;
+    const version=generation.current;
+    let messages:any;
+    try {messages=await api(prefix+`/output?after=${cursor.current}`);}catch(e){
+      if(version!==generation.current)return;
+      setConnected(false);throw e;
+    }
+    if(version!==generation.current)return;
+    setConnected(true);
+    setError(old=>old.startsWith('本机服务尚未恢复连接')?'':old);
     if (messages.gap) setError('部分实时输出已超出保留窗口；任务和命令记录仍可查看。');
     cursor.current = messages.latest_seq;
     setOutput(old=>Array.from(new Map([...old,...messages.events].map(item=>[item.seq,item])).values()).sort((a,b)=>a.seq-b.seq).slice(-2000));
   }
+  async function refresh() { await refreshSnapshot(); }
   useEffect(()=>{
     if (!token) return;
     let alive=true;
@@ -110,11 +123,19 @@ function App() {
   useEffect(()=>{
     if (!project) return;
     let active=true;
-    const poll=async()=>{try{await refresh()}catch(e){if(active)setError(e instanceof Error&&e.message.startsWith('本机服务尚未恢复连接')?e.message:String(e))}finally{if(active)timer=setTimeout(poll,1000)}};
+    const poll=async()=>{try{await refreshSnapshot()}catch(e){if(active)setError(e instanceof Error&&e.message.startsWith('本机服务尚未恢复连接')?e.message:String(e))}finally{if(active)timer=setTimeout(poll,10000)}};
     let timer:ReturnType<typeof setTimeout>;
     void poll();
     return ()=>{active=false;clearTimeout(timer)};
   },[project,token,taskOffset]);
+  useEffect(()=>{
+    if (!project) return;
+    let active=true;
+    const poll=async()=>{try{await refreshOutput()}catch(e){if(active)setError(e instanceof Error&&e.message.startsWith('本机服务尚未恢复连接')?e.message:String(e))}finally{if(active)timer=setTimeout(poll,3000)}};
+    let timer:ReturnType<typeof setTimeout>;
+    void poll();
+    return ()=>{active=false;clearTimeout(timer)};
+  },[project,token]);
   async function action(name:string, run:()=>Promise<unknown>) {
     const version=generation.current;setBusy(name);setError('');
     try {await run(); if(version===generation.current)await refresh(); return true} catch(e) {if(version===generation.current)setError(e instanceof Error ? e.message:String(e)); return false} finally {if(version===generation.current)setBusy('')}
@@ -157,7 +178,7 @@ function App() {
       return <div className="agent-stack" key={project.id+agent}>{cards.map((session,cardIndex)=>{
         const run=session?[...snapshot.runs].reverse().find(item=>item.session_id===session.id):undefined;
         const task=run?snapshot.tasks.find(item=>item.id===run.task_id):undefined;
-        return <AgentCard key={session?.id||agent} agent={agent} index={index} health={health} task={task} session={session} messages={output.filter(item=>item.session_id===session?.id)} busy={!!busy} paused={snapshot.paused}
+        return <AgentCard key={session?.id||agent} agent={agent} index={index} health={health} task={task} run={run} session={session} messages={output.filter(item=>item.session_id===session?.id)} busy={!!busy} paused={snapshot.paused}
           start={()=>action(agent,()=>api(prefix+'/sessions',{agent,...(session?{resume_from:session.id}:{})}))}
           send={text=>action('send',()=>api(prefix+`/sessions/${session!.id}/commands`,{epoch:session!.epoch,text}))}
           takeover={()=>action('takeover',()=>api(prefix+`/sessions/${session!.id}/takeover`,{expected_epoch:session!.epoch,owner:'human'}))}
@@ -211,7 +232,7 @@ function TaskList(props:TaskListProps) {
 function TaskItem({task,run,disabled,start,agent}:{agent:string;task:Task;run?:Run;disabled:boolean;start:()=>unknown}) {
   const running=!!run&&!['done','rework_required','reconciling','reconciled','failed'].includes(run.state);
   const states:Record<string,string>={preparing:'准备工作树',starting:'启动 Agent',running:'执行中 · 可在会话卡查看',reviewing:run?.phase==='inventory'?'盘点剩余工作':'架构、测试与体验多视角复审',committing:'保存修改',verifying:'独立验证中',done:'验收通过',rework_required:'检查未通过，可继续返工',reconciling:'需要对账，已停止自动执行',failed:'未能启动'};
-  return <article className="task"><strong title={task.id}>{task.description}</strong><span className={'status '+task.state}>{labels[task.state]||task.state}</span><small>尝试 {task.attempt}</small>{run&&<p className="run-status">{states[run.state]||run.state}{run.reason&&<small>{run.reason}</small>}</p>}{run?.artifact_sha256&&<details><summary>验证证据</summary><small className="evidence">SHA-256: {run.artifact_sha256}</small></details>}{task.state==='todo'&&<button disabled={disabled||running} onClick={start}>{run?.state==='rework_required'?'继续返工':`交给 ${{claude:'Claude',codex:'Codex',opencode:'OpenCode'}[agent]} 执行`}</button>}</article>;
+  return <article className="task"><strong title={task.id}>{task.description}</strong><span className={'status '+task.state}>{labels[task.state]||task.state}</span><small>尝试 {task.attempt}</small>{run&&<p className="run-status">{states[run.state]||run.state}{run.reason&&<small>{run.reason}</small>}</p>}{run?.check_diagnostics&&<details className="check-diagnostics"><summary>验收失败诊断</summary>{Object.entries(run.check_diagnostics).map(([name,detail])=><section key={name}><b>{name}</b><small>状态 {detail.status||'未知'} · 退出码 {detail.exit_code??'无'} · 耗时 {detail.duration_seconds?.toFixed(2)??'未知'} 秒</small>{(['stderr','stdout'] as const).map(stream=>detail.streams?.[stream]?.excerpt&&<pre key={stream}>{stream}: {detail.streams[stream].excerpt}{detail.streams[stream].excerpt_truncated?'\n[仅展示前 16 KiB]':''}</pre>)}</section>)}</details>}{run?.artifact_sha256&&<details><summary>验证证据</summary><small className="evidence">SHA-256: {run.artifact_sha256}</small></details>}{task.state==='todo'&&<button disabled={disabled||running} onClick={start}>{run?.state==='rework_required'?'继续返工':`交给 ${{claude:'Claude',codex:'Codex',opencode:'OpenCode'}[agent]} 执行`}</button>}</article>;
 }
 
 function TaskConsole({run,live}:{run?:Run;live:Output[]}) {
@@ -219,14 +240,31 @@ function TaskConsole({run,live}:{run?:Run;live:Output[]}) {
   return <details className="task-console" open><summary>{'\u5b9e\u65f6\u6267\u884c\u63a7\u5236\u53f0'}</summary><div className="console-screen" role="log" aria-live="polite">{run?.conversation?.instruction&&<pre className="console-line input"><b>PM $</b> {run.conversation.instruction}</pre>}{events.map((event,index)=><pre className={'console-line '+event.type} key={`${event.seq}-${index}`}><b>{event.type==='text'?'Agent >':event.type==='tool_result'?'Tool  >':event.type==='error'?'Error >':'System>'}</b> {eventLabel(event)}</pre>)}{!run?.conversation?.instruction&&!events.length&&<pre className="console-line">{'\u6b63\u5728\u7b49\u5f85\u4f1a\u8bdd\u8f93\u51fa\u2026'}</pre>}</div></details>;
 }
 
-function AgentCard({agent,index,health,task,session,messages,busy,paused,start,send,takeover,interrupt}:{agent:string;index:number;health?:AgentHealth;task?:Task;session?:Session;messages:Output[];busy:boolean;paused:boolean;start:()=>unknown;send:(text:string)=>Promise<unknown>;takeover:()=>unknown;interrupt:()=>unknown}) {
+function agentVisualStatus(health:AgentHealth|undefined,session:Session|undefined,task:Task|undefined,run:Run|undefined,messages:Output[]) {
+  if(health?.state==='unavailable')return {state:'reconnecting',label:`自动重连中 · 第 ${health.failures} 次失败`,icon:'↻'};
+  if(run?.state==='reconciling'||session?.state==='reconciling')return {state:'reconciling',label:'交付对账中',icon:'⌛'};
+  if(run?.state==='rework_required'||run?.state==='failed'||task?.state==='blocked')return {state:'attention',label:run?.state==='rework_required'?'等待返工':'执行异常',icon:'!'};
+  if(!session)return {state:'stopped',label:'未启动',icon:'■'};
+  if(session.state==='starting')return {state:'starting',label:'启动中',icon:'◌'};
+  if(session.state==='closed')return {state:'stopped',label:'已停止',icon:'■'};
+  if(session.state==='offline')return {state:'disconnected',label:'连接断开',icon:'×'};
+  const hasAgentResponse=messages.some(message=>['text','tool_result','completed','error'].includes(message.type));
+  if(run&&['starting','running'].includes(run.state)&&!hasAgentResponse)return {state:'waiting',label:'指令已送达 · 等待 Agent 回复',icon:'◷'};
+  if(run?.state==='verifying'||task?.state==='verifying')return {state:'verifying',label:'独立验收中',icon:'✓'};
+  if(run?.state==='running'||task?.state==='leased')return {state:'running',label:'正在执行',icon:'●'};
+  if(session.state==='ready')return {state:'waiting',label:'会话就绪 · 等待指令',icon:'◷'};
+  return {state:'unknown',label:`状态：${session.state}`,icon:'?'};
+}
+
+function AgentCard({agent,index,health,task,run,session,messages,busy,paused,start,send,takeover,interrupt}:{agent:string;index:number;health?:AgentHealth;task?:Task;run?:Run;session?:Session;messages:Output[];busy:boolean;paused:boolean;start:()=>unknown;send:(text:string)=>Promise<unknown>;takeover:()=>unknown;interrupt:()=>unknown}) {
   const [text,setText]=useState('');
   const [expanded,setExpanded]=useState(false);
   const feed=useRef<HTMLDivElement>(null);
   const offline=!!session&&["closed","offline","reconciling"].includes(session.state);
+  const status=agentVisualStatus(health,session,task,run,messages);
   useEffect(()=>{if(feed.current)feed.current.scrollTop=feed.current.scrollHeight},[messages.length]);
   const emptyMessage=offline?'旧会话已断开；PM 在派发任务时会创建新的受管会话。':'会话已连接，等待第一条指令。';
-  return <article className={'agent-card '+(expanded?'expanded':'')}><div className="agent-title"><span className={'agent-icon color-'+index}>{agent.slice(0,1).toUpperCase()}</span><div><h2>{agent==='codex'?'Codex':agent==='claude'?'Claude':'OpenCode'}</h2>{task&&<small className="task-session" title={task.description}>{task.description}</small>}<small>{health?.state==='unavailable'?`自动重连中 · 第 ${health.failures} 次失败`:(session?`${labels[session.state]||session.state} · ${session.owner==='human'?'人工输入':'PM 输入'}`:'尚未启动')}</small></div><button aria-label="展开会话" className="icon" onClick={()=>setExpanded(!expanded)}>{expanded?'收起':'展开'}</button></div><div className="mode">会话摘要<span>{session?session.id.slice(-8):'未连接'}</span></div><div ref={feed} className="feed" aria-live="polite">{!session?<div className="empty-session"><span>0{index+1}</span><h3>启动独立会话</h3><p>连接已安装的 Agent，查看公开回复与执行状态。</p><button disabled={busy||paused} onClick={start}>启动 {agent==='claude'?'Claude':agent==='codex'?'Codex':'OpenCode'} →</button></div>:messages.length===0?<p className="empty">{emptyMessage}</p>:messages.map(m=><div key={m.seq} className={'message '+m.type}><small>{eventSummary(m)}</small></div>)}</div><form onSubmit={async e=>{e.preventDefault();const input=text;if(await send(input))setText('')}}><textarea aria-label={`给 ${agent} 的指令`} placeholder={session?'输入指令，发送到此会话…':'启动会话后输入指令'} disabled={!session||session.state!=='ready'||paused} value={text} onChange={e=>setText(e.target.value)}/><div className="composer-actions"><div>{offline&&<button type="button" disabled={busy||paused} onClick={start}>恢复会话</button>}{session&&session.state==='ready'&&<><button type="button" onClick={takeover} disabled={busy}>接管</button><button type="button" onClick={interrupt} disabled={busy}>中断</button></>}</div><button className="primary" disabled={!session||!text.trim()||busy||paused||session.state!=='ready'}>发送 ↑</button></div></form></article>;
+  return <article className={'agent-card '+(expanded?'expanded':'')}><div className="agent-title"><span className={'agent-icon color-'+index}>{agent.slice(0,1).toUpperCase()}</span><div><h2>{agent==='codex'?'Codex':agent==='claude'?'Claude':'OpenCode'}</h2>{task&&<small className="task-session" title={task.description}>{task.description}</small>}<div className="agent-state-line" data-state={status.state} role="status" aria-label={`${agent}: ${status.label}`} title={`${agent}: ${status.label}`}><span className="agent-state-icon" aria-hidden="true">{status.icon}</span><span>{status.label}</span>{session&&<span className="agent-owner">· {session.owner==='human'?'人工输入':'PM 输入'}</span>}</div></div><button aria-label="展开会话" className="icon" onClick={()=>setExpanded(!expanded)}>{expanded?'收起':'展开'}</button></div><div className="mode">会话摘要<span>{session?session.id.slice(-8):'未连接'}</span></div><div ref={feed} className="feed" aria-live="polite">{!session?<div className="empty-session"><span>0{index+1}</span><h3>启动独立会话</h3><p>连接已安装的 Agent，查看公开回复与执行状态。</p><button disabled={busy||paused} onClick={start}>启动 {agent==='claude'?'Claude':agent==='codex'?'Codex':'OpenCode'} →</button></div>:messages.length===0?<p className="empty">{run&&['starting','running'].includes(run.state)?'指令已送达，等待 Agent 回复或工具输出。':emptyMessage}</p>:messages.map(m=><div key={m.seq} className={'message '+m.type}><small>{eventSummary(m)}</small></div>)}</div><form onSubmit={async e=>{e.preventDefault();const input=text;if(await send(input))setText('')}}><textarea aria-label={`给 ${agent} 的指令`} placeholder={session?'输入指令，发送到此会话…':'启动会话后输入指令'} disabled={!session||session.state!=='ready'||paused} value={text} onChange={e=>setText(e.target.value)}/><div className="composer-actions"><div>{offline&&<button type="button" disabled={busy||paused} onClick={start}>恢复会话</button>}{session&&session.state==='ready'&&<><button type="button" onClick={takeover} disabled={busy}>接管</button><button type="button" onClick={interrupt} disabled={busy}>中断</button></>}</div><button className="primary" disabled={!session||!text.trim()||busy||paused||session.state!=='ready'}>发送 ↑</button></div></form></article>;
 }
 
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

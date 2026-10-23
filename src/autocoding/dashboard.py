@@ -92,6 +92,23 @@ class Dashboard:
             conn.execute('BEGIN')
             return self.host.redactor.value(page(conn, kind, offset, limit))
 
+    def liveness(self):
+        """Lightweight watchdog view without history or Agent transcripts."""
+        with self.core.connection() as conn:
+            counts={r['state']:r['n'] for r in conn.execute('SELECT state,COUNT(*) n FROM tasks GROUP BY state')}
+            stale_leases=[r['id'] for r in conn.execute(
+                "SELECT id FROM tasks WHERE state IN ('leased','verifying') "
+                "AND lease_until IS NOT NULL AND lease_until<? ORDER BY id",
+                (self.core.clock(),))]
+            row=conn.execute("SELECT value FROM metadata WHERE key GLOB 'batch:*' "
+                "ORDER BY COALESCE(json_extract(value,'$.created_at'),0) DESC,key DESC LIMIT 1").fetchone()
+            batch=json.loads(row['value']) if row else None
+        return {'project_id':self.host.project_id,'paused':self.host.paused,'task_counts':counts,
+                'stale_leases':stale_leases,
+                'active_sessions':sum(1 for runtime in self.host.runtimes.values() if not runtime._quarantined),
+                'batch':({k:batch.get(k) for k in ('id','state','reason','active_tasks','attempts','max_attempts')}
+                         if batch else None)}
+
     def snapshot(self, task_offset=0):
         with self.core.connection() as conn:
             conn.execute('BEGIN')
@@ -113,7 +130,12 @@ class Dashboard:
             result['agent_health'] = [json.loads(r['value']) for r in conn.execute("SELECT value FROM metadata WHERE key GLOB 'agent_health:*' ORDER BY key")]
             # Link a task run to its actual PM instruction and public runtime
             # events so the owner need not infer work from an idle session card.
+            latest_runs={}
             for run in result['runs']:
+                latest_runs[run.get('task_id')]=run.get('id')
+            for run in result['runs']:
+                if latest_runs.get(run.get('task_id')) != run.get('id'):
+                    continue
                 sid=run.get('session_id')
                 if not sid:
                     continue
@@ -121,7 +143,7 @@ class Dashboard:
                 instruction=''
                 if context:
                     try:
-                        instruction=str(json.loads(context['value']).get('initial',''))[:12000]
+                        instruction=str(json.loads(context['value']).get('initial',''))[:4096]
                     except (TypeError, ValueError):
                         pass
                 transcript=conn.execute('SELECT value FROM metadata WHERE key=?',('session_output:'+sid,)).fetchone()
@@ -132,12 +154,15 @@ class Dashboard:
                 live=[event for event in self.host.output if event.get('session_id')==sid]
                 seen={(event.get('seq'),event.get('type'),event.get('text'),event.get('code')) for event in events}
                 events.extend(event for event in live if (event.get('seq'),event.get('type'),event.get('text'),event.get('code')) not in seen)
+                events=events[-20:]
                 for event in events:
                     if isinstance(event,dict) and 'detail' in event:
-                        event['detail']=readable_text(event['detail'])
+                        detail=event['detail']
+                        event['detail']=readable_text(detail)[:2048] if isinstance(detail,str) else ''
                     if isinstance(event,dict) and 'text' in event:
-                        event['text']=readable_text(event['text'])
-                run['conversation']={'instruction':instruction,'events':events[-200:]}
+                        text=event['text']
+                        event['text']=readable_text(text)[:2048] if isinstance(text,str) else ''
+                run['conversation']={'instruction':instruction,'events':events}
         visible = {s['id'] for s in result['sessions']}
         result.update(metadata={sid: data for sid, data in self.host.metadata.items() if sid in visible},
                       paused=self.host.paused, live_ids=[sid for sid, runtime in self.host.runtimes.items() if not runtime._quarantined])

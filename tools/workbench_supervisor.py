@@ -43,6 +43,26 @@ def request(url, token=None, timeout=3):
         return json.loads(response.read().decode('utf-8'))
 
 
+def next_backoff(current, initial, maximum):
+    """Return a capped exponential retry delay; zero means first failure."""
+    return initial if current <= 0 else min(maximum, current * 2)
+
+
+def batch_is_stalled(batch, task_counts, stale_leases):
+    """Detect idle batches and active attempts whose durable lease expired."""
+    if not batch or batch.get('state') != 'running':
+        return False
+    active=set(batch.get('active_tasks') or ())
+    if not active:
+        return task_counts.get('leased',0)>0
+    return bool(active.intersection(stale_leases or ()))
+
+
+def restart_due(failures, unhealthy_since, now, last_restart_at):
+    return (failures >= 4 and unhealthy_since is not None and now-unhealthy_since >= 60
+            and now-last_restart_at >= 120)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--project', type=Path, required=True)
@@ -58,7 +78,9 @@ def main():
     except OSError: raise SystemExit('workbench supervisor already running')
     entry=Path(__file__).with_name('workbench.py')
     token_file=storage/'owner-token.txt'; log=storage/'watchdog.jsonl'
-    worker=None; failures=0; started_at=0.0; ready=False
+    worker=None; health_failures=0; business_failures=0; started_at=0.0; ready=False; last_business_probe=0.0
+    health_backoff=0.0; business_backoff=20.0
+    health_unhealthy_since=None; business_unhealthy_since=None; last_restart_at=0.0
     def note(event, **data):
         log.open('a',encoding='utf-8').write(json.dumps({'at':time.time(),'event':event,**data},ensure_ascii=False)+'\n')
     state_file=root/'.local/service-control/workbench.json'
@@ -86,19 +108,22 @@ def main():
     try:
         start('supervisor_start')
         while True:
-            time.sleep(3)
+            time.sleep(health_backoff or 10.0)
             # A dead child cannot become ready during the cold-start grace period.
             # Restart immediately so transient startup exits do not look like hangs.
             if worker is None or worker.poll() is not None:
                 note('worker_exited',pid=worker.pid if worker else None)
                 start('WORKER_EXITED')
-                failures=0
+                health_failures=0; business_failures=0
+                health_unhealthy_since=None; business_unhealthy_since=None
+                health_backoff=0.0
+                last_restart_at=time.monotonic()
                 continue
-            unhealthy=False; reason=''
+            health_unhealthy=False; reason=''
             try:
-                request(f'http://127.0.0.1:{args.port}/health')
+                request(f'http://127.0.0.1:{args.port}/health',timeout=8)
                 token=token_file.read_text(encoding='utf-8').strip()
-                identity=request(f'http://127.0.0.1:{args.port}/api/v1/project',token)
+                identity=request(f'http://127.0.0.1:{args.port}/api/v1/project',token,timeout=8)
                 remote_root=Path(str(identity.get('root',''))).resolve() if identity.get('root') else None
                 if remote_root != root:
                     note('port_identity_conflict',expected=str(root),actual=str(remote_root))
@@ -112,33 +137,72 @@ def main():
                 # Allow that cold start the same bounded window as the launcher,
                 # then supervise every request immediately once it has been ready.
                 if not ready and time.monotonic()-started_at < 150:
+                    health_backoff=next_backoff(health_backoff,10.0,60.0)
                     continue
-                unhealthy=True
-            if not unhealthy:
+                health_unhealthy=True
+            else:
+                health_backoff=0.0
+                health_failures=0; health_unhealthy_since=None
+            business_unhealthy=False; business_reason=''
+            if not health_unhealthy and time.monotonic()-last_business_probe>=business_backoff:
                 probe_stage='project_list'
+                probe_started=time.monotonic()
+                # Throttle failed probes too; otherwise a slow application
+                # receives a new expensive business probe every loop.
+                last_business_probe=probe_started
                 try:
                     token=token_file.read_text(encoding='utf-8').strip()
                     projects=request(f'http://127.0.0.1:{args.port}/api/v1/projects',token,timeout=10)
                     if not isinstance(projects, list):
                         raise ValueError('PROJECT_LIST_INVALID')
                     for project in projects:
-                        probe_stage='snapshot:'+str(project.get('id','unknown'))
-                        snap=request(f"http://127.0.0.1:{args.port}/api/v1/projects/{project['id']}/snapshot",token,timeout=10)
-                        batch=(snap.get('batches') or [{}])[-1]
+                        probe_stage='liveness:'+str(project.get('id','unknown'))
+                        snap=request(f"http://127.0.0.1:{args.port}/api/v1/projects/{project['id']}/liveness",token,timeout=5)
+                        batch=snap.get('batch') or {}
                         # Reconciliation may legitimately await evidence or the Owner.
                         # Only a claimed running batch with no active task is a liveness fault.
-                        stalled=(batch.get('state') == 'running' and not batch.get('active_tasks')
-                                 and snap.get('task_counts',{}).get('leased',0)>0)
-                        if stalled: unhealthy=True; reason='BATCH_STALLED:'+project['id']; break
+                        if batch_is_stalled(batch,snap.get('task_counts',{}),snap.get('stale_leases',[])):
+                            business_unhealthy=True; business_reason='BATCH_STALLED:'+project['id']; break
                 except Exception as exc:
-                    note('business_probe_failed',stage=probe_stage,reason=type(exc).__name__)
+                    note('business_probe_failed',stage=probe_stage,reason=type(exc).__name__,
+                         duration_seconds=round(time.monotonic()-probe_started,2),
+                         retry_in_seconds=business_backoff)
+                    business_backoff=next_backoff(business_backoff,20.0,120.0)
                     # A single project listing/snapshot failure is an application
                     # diagnostic. Restarting the whole service can amplify a bad
                     # project record into a permanent restart loop.
-            failures=failures+1 if unhealthy else 0
-            if unhealthy: note('unhealthy',reason=reason,consecutive=failures)
-            if failures>=3:
-                start(reason); failures=0
+                else:
+                    if business_unhealthy:
+                        business_failures+=1
+                        if business_unhealthy_since is None:
+                            business_unhealthy_since=time.monotonic()
+                        business_sustained=time.monotonic()-business_unhealthy_since
+                        note('business_unhealthy',reason=business_reason,consecutive=business_failures,
+                             sustained_seconds=round(business_sustained,1),retry_in_seconds=business_backoff)
+                        business_backoff=next_backoff(business_backoff,20.0,120.0)
+                    else:
+                        business_failures=0; business_unhealthy_since=None
+                        business_backoff=20.0
+            if health_unhealthy:
+                health_failures+=1
+                if health_unhealthy_since is None:
+                    health_unhealthy_since=time.monotonic()
+                sustained=time.monotonic()-health_unhealthy_since
+                note('unhealthy',reason=reason,consecutive=health_failures,
+                     sustained_seconds=round(sustained,1),
+                     retry_in_seconds=health_backoff or 10.0)
+                # Resource pressure can make a healthy worker slow. Give it a
+                # full minute to recover and impose a cooldown before killing
+                # the process tree, so transient load does not destroy a run.
+                if restart_due(health_failures,health_unhealthy_since,time.monotonic(),last_restart_at):
+                    start(reason); health_failures=0; health_unhealthy_since=None; health_backoff=0.0
+                    last_restart_at=time.monotonic()
+                else:
+                    health_backoff=next_backoff(health_backoff,10.0,60.0)
+            elif business_unhealthy and restart_due(business_failures,business_unhealthy_since,
+                                                    time.monotonic(),last_restart_at):
+                start(business_reason); business_failures=0; business_unhealthy_since=None
+                business_backoff=20.0; last_restart_at=time.monotonic()
     finally:
         # If the watchdog exits due to an unexpected exception, do not leave its
         # supervised worker detached and apparently healthy without supervision.
