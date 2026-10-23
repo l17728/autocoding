@@ -13,6 +13,7 @@ import {ClosurePanel} from './ClosurePanel';
 import {RecoveryPanel} from './RecoveryPanel';
 import {AcceptancePanel} from './AcceptancePanel';
 import {PMDialogue} from './PMDialogue';
+import {UpdateMonitor} from './UpdateMonitor';
 import {readResponse} from './api';
 
 type Session = {id:string; agent:string; state:string; owner:string; epoch:number};
@@ -33,6 +34,15 @@ const labels:Record<string,string> = {todo:'待执行',leased:'已领取',verify
 function eventSummary(event:Output) { if(event.type==='text')return '\u6536\u5230 Agent \u56de\u590d'; if(event.type==='receipt')return '\u5df2\u63a5\u53d7 PM \u6307\u4ee4'; if(event.type==='completed')return '\u56de\u5408\u5b8c\u6210'; if(event.type==='tool_started')return '\u5f00\u59cb\u5de5\u5177\u6b65\u9aa4'+(event.activity?' \u00b7 '+event.activity:''); if(event.type==='tool_result')return (event.is_error?'\u5de5\u5177\u6b65\u9aa4\u5931\u8d25':'\u5de5\u5177\u6b65\u9aa4\u5df2\u5b8c\u6210')+(event.activity?' \u00b7 '+event.activity:''); return event.code||event.type; }
 function eventLabel(event:Output) { return event.type==='text'?(event.text||''):event.type==='tool_result'?eventSummary(event)+(event.detail?'\n'+event.detail:''):eventSummary(event); }
 
+function SyncStatus({snapshotConnected,outputConnected,lastSyncAt,lastOutputAt,paused}:{snapshotConnected:boolean;outputConnected:boolean;lastSyncAt:number|null;lastOutputAt:number|null;paused:boolean}) {
+  const [now,setNow]=useState(Date.now());
+  useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),5000);return()=>clearInterval(timer)},[]);
+  const snapshotFresh=snapshotConnected&&lastSyncAt!==null&&now-lastSyncAt<30000;
+  const outputFresh=outputConnected&&lastOutputAt!==null&&now-lastOutputAt<12000;
+  const label=!snapshotFresh?'任务状态同步延迟':!outputFresh?'Agent 输出同步延迟':'实时同步正常';
+  return <><span className={'dot '+(!snapshotFresh||!outputFresh||paused?'amber':'')}/><span>{paused?'派发已暂停':label}</span><small className="sync-stamp" title="任务快照每 10 秒、Agent 输出每 3 秒轮询；切回页面时立即同步">状态 {lastSyncAt?new Date(lastSyncAt).toLocaleTimeString():'等待中'} · 输出 {lastOutputAt?new Date(lastOutputAt).toLocaleTimeString():'等待中'}</small></>;
+}
+
 function App() {
   const [token,setToken] = useState('');
   const [draftToken,setDraftToken] = useState('');
@@ -42,7 +52,10 @@ function App() {
   const [terminalVisible,setTerminalVisible]=useState(false);
   const [output,setOutput] = useState<Output[]>([]);
   const [error,setError] = useState('');
-  const [connected,setConnected] = useState(false);
+  const [snapshotConnected,setSnapshotConnected] = useState(false);
+  const [outputConnected,setOutputConnected] = useState(false);
+  const [lastSyncAt,setLastSyncAt] = useState<number|null>(null);
+  const [lastOutputAt,setLastOutputAt] = useState<number|null>(null);
   const [busy,setBusy] = useState('');
   const [executionAgent,setExecutionAgent] = useState('claude');
   const [taskDescription,setTaskDescription] = useState('');
@@ -77,10 +90,11 @@ function App() {
     let state:Snapshot;
     try {state=await api(prefix+'/snapshot'+(taskOffset?'?task_offset='+taskOffset:''));}catch(e){
       if(version!==generation.current||sequence!==refreshSequence.current)return;
-      setConnected(false);throw e;
+      setSnapshotConnected(false);throw e;
     }
     if(version!==generation.current||sequence!==refreshSequence.current)return;
-    setConnected(true);
+    setSnapshotConnected(true);
+    setLastSyncAt(Date.now());
     setError(old=>old.startsWith('本机服务尚未恢复连接')?'':old);
     setSnapshot(state);
   }
@@ -90,10 +104,11 @@ function App() {
     let messages:any;
     try {messages=await api(prefix+`/output?after=${cursor.current}`);}catch(e){
       if(version!==generation.current)return;
-      setConnected(false);throw e;
+      setOutputConnected(false);throw e;
     }
     if(version!==generation.current)return;
-    setConnected(true);
+    setOutputConnected(true);
+    setLastOutputAt(Date.now());
     setError(old=>old.startsWith('本机服务尚未恢复连接')?'':old);
     if (messages.gap) setError('部分实时输出已超出保留窗口；任务和命令记录仍可查看。');
     cursor.current = messages.latest_seq;
@@ -123,18 +138,24 @@ function App() {
   useEffect(()=>{
     if (!project) return;
     let active=true;
-    const poll=async()=>{try{await refreshSnapshot()}catch(e){if(active)setError(e instanceof Error&&e.message.startsWith('本机服务尚未恢复连接')?e.message:String(e))}finally{if(active)timer=setTimeout(poll,10000)}};
+    let polling=false;
+    const poll=async()=>{if(polling)return;polling=true;try{await refreshSnapshot()}catch(e){if(active)setError(e instanceof Error&&e.message.startsWith('本机服务尚未恢复连接')?e.message:String(e))}finally{polling=false;if(active)timer=setTimeout(poll,10000)}};
+    const onVisible=()=>{if(document.visibilityState==='visible'){clearTimeout(timer);void poll()}};
     let timer:ReturnType<typeof setTimeout>;
     void poll();
-    return ()=>{active=false;clearTimeout(timer)};
+    document.addEventListener('visibilitychange',onVisible);
+    return ()=>{active=false;clearTimeout(timer);document.removeEventListener('visibilitychange',onVisible)};
   },[project,token,taskOffset]);
   useEffect(()=>{
     if (!project) return;
     let active=true;
-    const poll=async()=>{try{await refreshOutput()}catch(e){if(active)setError(e instanceof Error&&e.message.startsWith('本机服务尚未恢复连接')?e.message:String(e))}finally{if(active)timer=setTimeout(poll,3000)}};
+    let polling=false;
+    const poll=async()=>{if(polling)return;polling=true;try{await refreshOutput()}catch(e){if(active)setError(e instanceof Error&&e.message.startsWith('本机服务尚未恢复连接')?e.message:String(e))}finally{polling=false;if(active)timer=setTimeout(poll,3000)}};
+    const onVisible=()=>{if(document.visibilityState==='visible'){clearTimeout(timer);void poll()}};
     let timer:ReturnType<typeof setTimeout>;
     void poll();
-    return ()=>{active=false;clearTimeout(timer)};
+    document.addEventListener('visibilitychange',onVisible);
+    return ()=>{active=false;clearTimeout(timer);document.removeEventListener('visibilitychange',onVisible)};
   },[project,token]);
   async function action(name:string, run:()=>Promise<unknown>) {
     const version=generation.current;setBusy(name);setError('');
@@ -143,7 +164,7 @@ function App() {
   function selectProject(next:Project) {
     setTaskOffset(0);
     setTerminalVisible(false);
-    if(next.id!==project?.id){generation.current++;selectedId.current=next.id;cursor.current=0;setConnected(false);setBusy('');setSnapshot(empty);setOutput([]);setProposal(null);setApproval(null);setGoal('');setCriteria('');setTaskDescription('');setTaskAcceptance('');setError('')}
+    if(next.id!==project?.id){generation.current++;selectedId.current=next.id;cursor.current=0;setSnapshotConnected(false);setOutputConnected(false);setLastSyncAt(null);setLastOutputAt(null);setBusy('');setSnapshot(empty);setOutput([]);setProposal(null);setApproval(null);setGoal('');setCriteria('');setTaskDescription('');setTaskAcceptance('');setError('')}
     setProject(next);
   }
   if (!project) return <main className="login"><div className="mark">A</div><p className="eyebrow">LOCAL DEVELOPMENT WORKSPACE</p><h1>开发协作工作台</h1><p>把指令、执行与验证放在同一个工作区。</p><section>
@@ -162,7 +183,7 @@ function App() {
   const activeRuns=snapshot.tasks.filter(task=>['leased','verifying'].includes(task.state)).map(task=>({task,run:[...(snapshot.runs||[])].reverse().find(run=>run.task_id===task.id)}));
   const hasNewDelegation=!!goal.trim()&&!!criteriaItems.length;
   const delegationDisabled=!!busy||snapshot.paused||batchActive||(!hasNewDelegation&&!existingTodos.length);
-  return <div className="shell"><header><div className="brand"><span className="mark">A</span><div><strong>开发协作</strong><small>本地工作台 · {project.name}</small></div></div><div className="header-actions"><span className={'dot '+(!connected||snapshot.paused?'amber':'')}/><span>{!connected?'服务未连接或正在重连':snapshot.paused?'派发已暂停':'服务已连接'}</span><button disabled={!!busy} onClick={()=>action('pause',()=>api(prefix+'/pause',{paused:!snapshot.paused}))}>{snapshot.paused?'继续派发':'暂停派发'}</button></div></header><ProjectPanel project={project} api={api} select={selectProject} disabled={!!busy}/><GlobalInputHistory api={api} usePlan={(savedGoal,savedAcceptance)=>{setGoal(savedGoal);setCriteria(savedAcceptance.join('\n'))}}/><PMDialogue key={'pm-dialogue:'+project.id} prefix={prefix} api={api}/>
+  return <div className="shell"><UpdateMonitor busy={!!busy}/><header><div className="brand"><span className="mark">A</span><div><strong>开发协作</strong><small>本地工作台 · {project.name}</small></div></div><div className="header-actions"><SyncStatus snapshotConnected={snapshotConnected} outputConnected={outputConnected} lastSyncAt={lastSyncAt} lastOutputAt={lastOutputAt} paused={snapshot.paused}/><button disabled={!!busy} onClick={()=>action('pause',()=>api(prefix+'/pause',{paused:!snapshot.paused}))}>{snapshot.paused?'继续派发':'暂停派发'}</button></div></header><ProjectPanel project={project} api={api} select={selectProject} disabled={!!busy}/><GlobalInputHistory api={api} usePlan={(savedGoal,savedAcceptance)=>{setGoal(savedGoal);setCriteria(savedAcceptance.join('\n'))}}/><PMDialogue key={'pm-dialogue:'+project.id} prefix={prefix} api={api}/>
     <div className="overview"><div><p className="eyebrow">PROJECT WORKSPACE</p><h1>让每一步执行都有据可查。</h1><p className="muted">{project.root}</p></div><div className="metrics"><div><b>{snapshot.pm_progress?.percent??0}<i>%</i></b><span title={snapshot.pm_progress?.basis}>PM 预估总体进度</span><progress aria-label="PM 预估总体进度" value={snapshot.pm_progress?.percent??0} max="100"/></div><div><b>{snapshot.task_counts?.done??snapshot.tasks.filter(t=>t.state==='done').length}<i> / {snapshot.totals?.tasks??snapshot.tasks.length}</i></b><span>任务已验证</span></div><div><b>{snapshot.pm_progress?.remaining_equivalent_tasks??0}</b><span>预估剩余等价任务</span></div><div><b>{snapshot.live_ids.length}</b><span>在线会话</span></div><div><b>{pending.length}</b><span>本页等待审批</span></div></div></div>
     {error&&<div role="alert" className="banner"><span>{error}</span><button onClick={()=>setError('')}>关闭</button></div>}
     {!!snapshot.payloads_omitted&&<p role="status">有 {snapshot.payloads_omitted} 条历史内容过大，页面仅显示安全摘要；完整记录仍保留在本地账本，任务操作不受影响。</p>}
