@@ -430,3 +430,10 @@ Owner 只提供目标、资料、边界和业务验收意图。PM 负责计划�
 - Agent 卡片将已关闭会话的任务和摘要标为历史内容；任务列表可展开对应 run 的已保存指令和公开输出，避免把旧指令误看成当前派发。
 - 定位到 `Host._output()` 持久化记录引用 `encoded()` 却未导入，异常被保护逻辑吞掉，导致对话从未落盘。补上导入、启动时恢复有界输出记录，并在 API 标明持久化保留范围。新增服务重启恢复回归用例，定向通过；前端 TypeScript 检查和生产构建通过。
 - 新版前端资源已由本机首页提供。后端进程仍有活动受管会话时不强制重启；后端持久化修复要在无活动 run/session 后重启生效。当前 BookPlayer 账本没有活动会话，最近批次因 `BATCH_ATTEMPT_LIMIT` 停止；autocoding 项目仍有活动 Agent run，故暂缓服务重启，避免中断工作。
+
+
+## 2026-10-23 Agent 分配默认值修正
+
+- 对账 BookPlayer 当前批次时确认其创建参数为 `agents=["claude"]`、`max_concurrency=1`；Codex 与 OpenCode 的 Agent 健康状态均为 `available`，但没有进入该批次候选。平台自身的 autocoding 项目另有 OpenCode 受管任务在运行。
+- 根因是 UI 执行 Agent 默认值为 Claude 单选，用户不显式切换“三 Agent 并发”就会创建 Claude-only 批次。新批次现默认选择 PM 自动分配三种 Agent，最大并发 3；切换项目也恢复该默认值，仍可手动指定单一 Agent。已运行批次不被改写或中断。
+- TypeScript 检查与前端生产构建通过，新资源已由服务首页提供。当前 BookPlayer Claude 任务已进入运行中，继续观察其自然结束；后端持久化修复仍待所有活动任务结束后安全重启。
