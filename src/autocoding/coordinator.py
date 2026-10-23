@@ -220,6 +220,13 @@ class Coordinator:
             if record['state'] not in {'queued','running','paused','reconciling'}:
                 continue
             try:
+                if record['state'] in {'running','reconciling'} and record.get('max_concurrency',1)>1:
+                    # A batch interrupted while the service was unresponsive
+                    # resumes under backpressure. Keep its configured agent
+                    # set and retry evidence, but serialize fresh attempts so
+                    # resource contention does not immediately repeat the stall.
+                    record['max_concurrency']=1
+                    record['recovery_backpressure']=True
                 # A batch may have paused only because one provider timed out.
                 # Change provider before calculating policies or spawning a
                 # new task attempt; no uncertain request is ever replayed.

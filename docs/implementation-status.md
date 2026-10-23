@@ -4,7 +4,9 @@
 
 发现项目批次在依赖任务达到重试上限后，将所有下游任务统一标记为 `reconciling`。没有运行中的 Agent 时，这种状态仍被前端视为活动批次，导致“委托待办”按钮置灰。协调器现区分两种情况：若阻塞任务都已明确进入 `rework_required`，下游任务和批次也进入 `rework_required`；若仍有交付状态不明的阻塞任务，则继续保留 `reconciling`，避免覆盖不确定证据。传播按依赖闭包求解，不依赖用户选择的任务顺序；回归测试以“下游先于依赖”的顺序验证。
 
-验证：`PYTHONPATH=src python -m unittest discover -s tests -p test_coordinator.py`，21 项通过。当前修复尚未部署到运行中的服务；重启需等 autocoding 批次的两个在途会话完成，避免中断 Agent。
+验证：`PYTHONPATH=src python -m unittest discover -s tests -p test_coordinator.py`，21 项通过。依赖顺序修复已提交并部署；BookPlayer 旧批次已从 `reconciling` 更正为 `rework_required`。该托管项目不属于本次平台代码开发范围。
+
+恢复策略补充：watchdog 记录到 `HTTP_UNRESPONSIVE`，本批次有交付未知与 stale lease。对运行中断或进入对账的批次，恢复时把并发降为 1，保留已配置 Agent 集合和原尝试证据，避免满并发立即重现资源争用。针对该降载行为新增协调器回归测试。
 
 ## 创建、进程清理与交互补验（2026-10-19，最新）
 

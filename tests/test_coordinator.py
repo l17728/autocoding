@@ -222,6 +222,30 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('rework_required',record['state'])
         self.assertEqual('BATCH_ATTEMPT_LIMIT',record['reason'])
 
+    async def test_interrupted_batch_recovery_applies_serial_backpressure(self):
+        self.task('task_a')
+        self.task('task_b')
+        record={'id':'batch_backpressure','task_ids':['task_a','task_b'],'created_at':1,
+                'base_sha':'a'*40,'provider':'codex','max_attempts':3,'run_ids':[],
+                'attempts':{'task_a':1,'task_b':1},'agents':['codex','opencode','claude'],
+                'max_concurrency':3,'assignments':{'task_a':'codex','task_b':'opencode'}}
+        self.host.coordinator.save(record,'reconciling',reason='RUN_DELIVERY_RECONCILIATION_REQUIRED',
+                                   active_tasks=['task_a','task_b'])
+        scheduled=[]
+        original_background=self.host._background
+        self.host._background=lambda coroutine: scheduled.append(coroutine)
+        try:
+            self.host.coordinator.recover()
+            recovered=self.host.coordinator.list()[0]
+            self.assertEqual(1,recovered['max_concurrency'])
+            self.assertTrue(recovered['recovery_backpressure'])
+            self.assertEqual('queued',recovered['state'])
+            self.assertEqual(1,len(scheduled))
+        finally:
+            self.host._background=original_background
+            for coroutine in scheduled:
+                coroutine.close()
+
     async def test_persisted_match_detects_retry_with_unchanged_active_task_set(self):
         record={'id':'batch_retry','task_ids':['task_a'],'attempts':{'task_a':1},
                 'run_ids':['run_first'],'max_attempts':3}
