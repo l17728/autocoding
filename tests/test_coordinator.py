@@ -196,7 +196,8 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.task('task_b',['task_a'])
         self.fail='task_a'
         self.release.set()
-        await self.host.coordinator.start(['task_a','task_b'],max_concurrency=1,max_attempts=2)
+        # Selection order is not necessarily topological; test downstream first.
+        await self.host.coordinator.start(['task_b','task_a'],max_concurrency=1,max_attempts=2)
         await self.until(lambda:self.host.coordinator.current is None)
 
         batch=self.host.coordinator.list()[0]

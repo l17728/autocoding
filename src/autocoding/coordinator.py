@@ -309,18 +309,29 @@ class Coordinator:
                     # An exhausted task must not strand unrelated ready work.
                     # Once no task can make progress, record the dependency
                     # frontier explicitly and finish with a durable stop.
-                    for task in pending:
-                        if task['id'] not in task_stops:
-                            with self.core.connection() as conn:
-                                blockers=[r['id'] for r in conn.execute(
-                                    "SELECT p.id FROM dependencies d JOIN tasks p ON p.id=d.depends_on "
-                                    "WHERE d.task_id=? AND p.state!='done' ORDER BY p.id",(task['id'],))]
-                            blocker_stops=[task_stops.get(blocker) for blocker in blockers]
-                            exhausted_frontier=bool(blockers) and all(
-                                stopped is not None and stopped[0]=='rework_required'
-                                for stopped in blocker_stops)
-                            blocked_state='rework_required' if exhausted_frontier else 'reconciling'
-                            task_stops[task['id']]=(blocked_state,'BATCH_TASKS_BLOCKED',blockers)
+                    blocked_by={}
+                    with self.core.connection() as conn:
+                        for task in pending:
+                            if task['id'] in task_stops:
+                                continue
+                            blocked_by[task['id']]=[r['id'] for r in conn.execute(
+                                "SELECT p.id FROM dependencies d JOIN tasks p ON p.id=d.depends_on "
+                                "WHERE d.task_id=? AND p.state!='done' ORDER BY p.id",(task['id'],))]
+                    # Propagate exhausted prerequisites to a fixed point before
+                    # classifying the unresolved frontier. Task selection order
+                    # is user controlled and may put downstream tasks first.
+                    unresolved=set(blocked_by)
+                    while unresolved:
+                        newly_exhausted={tid for tid in unresolved if blocked_by[tid] and all(
+                            task_stops.get(blocker,(None,))[0]=='rework_required'
+                            for blocker in blocked_by[tid])}
+                        if not newly_exhausted:
+                            break
+                        for tid in newly_exhausted:
+                            task_stops[tid]=('rework_required','BATCH_TASKS_BLOCKED',blocked_by[tid])
+                        unresolved-=newly_exhausted
+                    for tid in unresolved:
+                        task_stops[tid]=('reconciling','BATCH_TASKS_BLOCKED',blocked_by[tid])
                     if not running:
                         self.save_stopped_batch(record,task_stops)
                         return
