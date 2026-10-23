@@ -257,7 +257,7 @@ function TaskItem({task,run,events,disabled,start,agent}:{agent:string;task:Task
 }
 
 function TaskConsole({run,live,open=true,title='实时执行控制台'}:{run?:Run;live:Output[];open?:boolean;title?:string}) {
-  const events=run?.conversation?.events?.length?run.conversation.events:live;
+  const events=Array.from(new Map([...(run?.conversation?.events||[]),...live].map(event=>[`${event.session_id}:${event.seq}`,event])).values()).sort((a,b)=>a.seq-b.seq||a.session_id.localeCompare(b.session_id));
   return <details className="task-console" open={open}><summary>{title}</summary><div className="console-screen" role="log" aria-live="polite">{run?.conversation?.instruction&&<pre className="console-line input"><b>PM $</b> {run.conversation.instruction}</pre>}{events.map((event,index)=><pre className={'console-line '+event.type} key={`${event.session_id}-${event.seq}-${index}`}><b>{event.type==='text'?'Agent >':['tool_result','tool_started'].includes(event.type)?'Tool  >':event.type==='error'?'Error >':'System>'}</b> {eventLabel(event)}</pre>)}{!run?.conversation?.instruction&&!events.length&&<pre className="console-line">{run&&['starting','running'].includes(run.state)?'等待 Agent 输出；本次服务尚未收到公开事件。':'当前没有已保存的公开输入/输出记录。'}</pre>}</div></details>;
 }
 
