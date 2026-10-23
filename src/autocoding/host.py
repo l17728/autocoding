@@ -396,7 +396,8 @@ class Host:
             raise
         except (TransportError, DomainError) as exc:
             if not runtime.closed:
-                self._output(sid, 'error', code=exc.code)
+                diagnostic=getattr(runtime.adapter,'last_error_diagnostic',None)
+                self._output(sid, 'error', code=exc.code, protocol_diagnostic=diagnostic)
             restart = (not self._closing and not runtime.closed and exc.code in {
                 'PROCESS_STREAM_CLOSED','PROCESS_READ_FAILED','OPENCODE_CONNECTION_LOST','OPENCODE_HTTP_TIMEOUT',
                 'CLAUDE_ACK_TIMEOUT_DELIVERY_UNKNOWN'}

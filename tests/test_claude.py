@@ -110,6 +110,17 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("failed", self.core.command(command)["state"])
         self.assertNotIn("PRIVATE_CANARY", json.dumps(events) + json.dumps(self.core.events()))
 
+    async def test_unsupported_event_logs_shape_without_frame_values(self):
+        runtime = await self.runtime('unsupported-event')
+        command = self.core.enqueue("claude_test", "pm", 0, "unsupported event probe", key="unsupported-event")["command_id"]
+        await runtime.send(command, "unsupported event probe")
+        with self.assertRaisesRegex(TransportError, 'CLAUDE_UNSUPPORTED_EVENT'):
+            await runtime.next_event(timeout=2)
+        diagnostic = runtime.adapter.last_error_diagnostic
+        self.assertEqual('rate_limit_event', diagnostic['event_type'])
+        self.assertTrue(diagnostic['session_matches'])
+        self.assertNotIn('PRIVATE_CANARY', json.dumps(diagnostic))
+
     async def test_tool_activity_and_result_are_available_to_live_console(self):
         runtime=await self.runtime('tool-output',tools_enabled=True)
         command=self.enqueue()

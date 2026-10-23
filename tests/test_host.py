@@ -166,6 +166,17 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('queued',self.host.core.command(second['command_id'])['state'])
         self.assertEqual(1,len([e for e in self.host.core.events() if e['type']=='CommandDispatching']))
 
+    async def test_unsupported_claude_frame_shape_is_visible_without_values(self):
+        await self.connect('unsupported-event')
+        receipt=await self.host.send('s',0,'probe unsupported event',key='unsupported-event')
+        await self.wait_state(receipt['command_id'],'delivery_unknown')
+        await asyncio.gather(*list(self.host.tasks))
+        event=next(item for item in self.host.output if item['type']=='error'
+                   and item.get('protocol_diagnostic'))
+        self.assertEqual('CLAUDE_UNSUPPORTED_EVENT',event['code'])
+        self.assertEqual('rate_limit_event',event['protocol_diagnostic']['event_type'])
+        self.assertNotIn('PRIVATE_CANARY',str(event))
+
     async def test_queue_limit_keeps_idempotent_retry_available(self):
         self.host.core.create_session('s','fixture',owner='human',key='s')
         first=None

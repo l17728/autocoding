@@ -31,6 +31,7 @@ class ClaudeSession:
         self._permissions = {}
         self._permission_replies = {}
         self._tool_names = {}
+        self.last_error_diagnostic = None
         self._reader = asyncio.create_task(self._dispatch(), name="claude-dispatch")
 
     @classmethod
@@ -254,9 +255,38 @@ class ClaudeSession:
     async def _dispatch(self):
         try:
             while True:
-                self._handle(await self.transport.receive())
+                message = await self.transport.receive()
+                try:
+                    self._handle(message)
+                except TransportError as exc:
+                    if exc.code == 'CLAUDE_UNSUPPORTED_EVENT':
+                        self.last_error_diagnostic = self._event_diagnostic(message)
+                    raise
         except TransportError as exc:
             self._fail(exc.code)
+
+    def _event_diagnostic(self, message):
+        """Return protocol shape only; never persist provider frame values."""
+        if not isinstance(message, dict):
+            return {'event_type': type(message).__name__, 'frame_type': type(message).__name__}
+        event_type = message.get('type')
+        if not isinstance(event_type, str) or len(event_type) > 100:
+            event_type = type(event_type).__name__
+        nested = message.get('message')
+        blocks = nested.get('content') if isinstance(nested, dict) else None
+        block_types = sorted({block.get('type') for block in blocks
+                              if isinstance(block, dict) and isinstance(block.get('type'), str)})[:16] \
+                      if isinstance(blocks, list) else []
+        return {'event_type': event_type,
+                'frame_keys': sorted(k for k in message if isinstance(k, str)
+                                     and len(k) <= 80 and k.replace('_', '').isalnum())[:24],
+                'message_keys': sorted(k for k in nested if isinstance(k, str)
+                                       and len(k) <= 80 and k.replace('_', '').isalnum())[:24]
+                                if isinstance(nested, dict) else [],
+                'content_block_types': block_types,
+                'session_matches': message.get('session_id') == self.thread_id,
+                'input_uuid_present': 'user_message_uuid' in message,
+                'input_uuids_present': 'user_message_uuids' in message}
 
     async def send_text(self, text, *, command_id):
         if not isinstance(text, str) or not text.strip() or len(text.encode("utf-8")) > 65536:

@@ -16,6 +16,11 @@ for line in sys.stdin:
     if mode == "silent":
         continue
     send({"type": "system", "subtype": "init", "session_id": sid, "private": "PRIVATE_CANARY"})
+    if mode == "unsupported-event":
+        send({**message, "isReplay": True})
+        send({"type": "rate_limit_event", "session_id": sid,
+              "api_key": "PRIVATE_CANARY", "message": {"content": "PRIVATE_CANARY"}})
+        continue
     if mode == "approval":
         send({"type": "control_request", "request_id": "approve", "request": {"subtype": "can_use_tool"}})
         continue
