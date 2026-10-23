@@ -229,6 +229,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(['saved agent reply','saved tool output'],[event.get('text') or event.get('detail') for event in restarted.output])
         restarted._output('session_c','text',text='after restart')
         self.assertEqual(3,restarted.output_seq)
+        with TestClient(create_app(restarted,self.token),base_url='http://127.0.0.1:8765') as client:
+            response=client.get('/api/v1/projects/'+restarted.project_id+'/output?after=0',headers=self.headers)
+        self.assertEqual(200,response.status_code)
+        self.assertTrue(response.json()['persistent'])
+        self.assertEqual(3,len(response.json()['events']))
+        self.assertEqual(200,response.json()['retention']['per_session_events'])
 
     def test_workspace_result_survives_app_restart_and_conflicting_retry(self):
         self.host.workspaces.create = Mock(return_value={'id': 'workspace_fixture'})
