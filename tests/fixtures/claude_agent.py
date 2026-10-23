@@ -25,6 +25,8 @@ for line in sys.stdin:
         send({"type": "assistant", "session_id": sid, "parent_tool_use_id": None,
               "message": {"role": "assistant", "content": [
                   {"type": "tool_use", "id": "tool-no-uuid", "name": "Bash", "input": {"command": "true"}}]}})
+        send({"type": "assistant", "session_id": sid, "parent_tool_use_id": None,
+              "message": {"role": "assistant", "content": [{"type": "text", "text": "tool is running"}]}})
         send(result)
         continue
     if mode == "early":

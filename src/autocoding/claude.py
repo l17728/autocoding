@@ -103,6 +103,9 @@ class ClaudeSession:
         if (self.controls and message.get('type') == 'assistant'
                 and 'user_message_uuid' not in message and 'user_message_uuids' not in message
                 and self.turn_id and not self._result_received and self._ack is not None):
+            if (self._ack.done() and not self._ack.cancelled()
+                    and self._ack.exception() is None):
+                return
             body = message.get('message')
             blocks = body.get('content') if isinstance(body, dict) else None
             has_top_level_tool_call = (message.get('parent_tool_use_id') is None
@@ -112,8 +115,6 @@ class ClaudeSession:
             if has_top_level_tool_call:
                 if not self._ack.done():
                     self._ack.set_result(True)
-                elif self._ack.cancelled() or self._ack.exception() is not None:
-                    raise TransportError('CLAUDE_TURN_MISMATCH')
                 return
         if (not self.turn_id or self._result_received
                 or message.get("user_message_uuid") != self.turn_id

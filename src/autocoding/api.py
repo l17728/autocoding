@@ -847,7 +847,7 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
         # after every successful/replayed receipt so a crash between that write
         # and this wake-up cannot strand work until the next service restart.
         if result.get('state') == 'todo':
-            await asyncio.to_thread(host.coordinator.resume_after_recovery)
+            host.coordinator.resume_after_recovery()
         return result
 
     @app.post(prefix + '/batches', dependencies=guarded)

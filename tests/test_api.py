@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -62,8 +63,12 @@ class ApiTests(unittest.TestCase):
     def test_recovery_reenters_pm_batch_loop_on_receipt_replay(self):
         from autocoding.recovery import Recovery
         result={'task_id':'task_a','state':'todo','execution_started':False}
+        observed_loops=[]
         with patch.object(Recovery,'resolve',return_value=result) as resolve:
-            self.host.coordinator.resume_after_recovery=Mock(return_value=True)
+            def wake():
+                observed_loops.append(asyncio.get_running_loop())
+                return True
+            self.host.coordinator.resume_after_recovery=Mock(side_effect=wake)
             response=self.client.post(self.prefix+'/runs/run_a/recovery',
                 headers={**self.headers,'Idempotency-Key':'recovery-resume'},
                 json={'fingerprint':'a'*64,'note':'Confirmed stopped and preserved evidence','stopped':True})
@@ -76,6 +81,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(response.json(),replay.json())
             self.assertEqual(2,resolve.call_count)
             self.assertEqual(2,self.host.coordinator.resume_after_recovery.call_count)
+            self.assertEqual(2,len(observed_loops))
 
     def test_owner_profile_auth_revision_and_idempotency(self):
         path=self.prefix+'/pm/profile'
