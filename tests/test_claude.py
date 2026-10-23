@@ -20,11 +20,11 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         self.core = Core(Path(self.temp.name) / "core.db")
         self.core.create_session("claude_test", "claude", key="session")
 
-    async def runtime(self, mode="normal", timeout=2, tools_enabled=False):
+    async def runtime(self, mode="normal", timeout=2, tools_enabled=False, controls=False):
         transport = await JsonLineProcess.start([sys.executable, "-u",
             str(ROOT / "tests/fixtures/claude_agent.py"), mode], cwd=ROOT)
         adapter = ClaudeSession(transport, session_id="session_fixture", timeout=timeout,
-                                tools_enabled=tools_enabled)
+                                tools_enabled=tools_enabled, controls=controls)
         runtime = SessionRuntime(self.core, "claude_test", adapter)
         self.addAsyncCleanup(runtime.close)
         return runtime
@@ -79,6 +79,14 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         command = self.enqueue('no-replay')
         self.assertEqual('acknowledged',(await runtime.send(command,'中文输入'))['state'])
         await self.finish(runtime,command)
+        self.assertEqual('completed',self.core.command(command)['state'])
+
+    async def test_top_level_tool_frame_without_input_uuid_acks_unique_active_turn(self):
+        runtime = await self.runtime("tool-no-uuid", tools_enabled=True, controls=True)
+        command = self.core.enqueue("claude_test", "pm", 0, "tool frame input", key="tool-no-uuid")["command_id"]
+        self.assertEqual('acknowledged',(await runtime.send(command,"tool frame input"))['state'])
+        events = await self.finish(runtime,command)
+        self.assertTrue(any(event['method']=='tool/started' for event in events))
         self.assertEqual('completed',self.core.command(command)['state'])
 
     async def test_mismatched_replay_freezes(self):

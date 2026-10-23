@@ -96,13 +96,25 @@ class ClaudeSession:
             'single_present': 'user_message_uuid' in message,
             'list_present': 'user_message_uuids' in message}
         # Tool-bearing assistant frames in CLI 2.1.296 omit input UUID fields.
-        # They are progress only and may be attached to the sole acknowledged
-        # turn. Final result still requires the input UUID before completion.
+        # A top-level tool call is itself a receipt that the only active turn
+        # reached the model, even when the CLI omitted the legacy user replay.
+        # Attach it only to that one pending turn; child frames remain progress
+        # and final result still requires the input UUID before completion.
         if (self.controls and message.get('type') == 'assistant'
                 and 'user_message_uuid' not in message and 'user_message_uuids' not in message
-                and self.turn_id and not self._result_received and self._ack is not None
-                and self._ack.done() and not self._ack.cancelled() and self._ack.exception() is None):
-            return
+                and self.turn_id and not self._result_received and self._ack is not None):
+            body = message.get('message')
+            blocks = body.get('content') if isinstance(body, dict) else None
+            has_top_level_tool_call = (message.get('parent_tool_use_id') is None
+                and isinstance(blocks, list)
+                and any(isinstance(block, dict) and block.get('type') == 'tool_use'
+                        for block in blocks))
+            if has_top_level_tool_call:
+                if not self._ack.done():
+                    self._ack.set_result(True)
+                elif self._ack.cancelled() or self._ack.exception() is not None:
+                    raise TransportError('CLAUDE_TURN_MISMATCH')
+                return
         if (not self.turn_id or self._result_received
                 or message.get("user_message_uuid") != self.turn_id
                 or message.get("user_message_uuids") != [self.turn_id]):

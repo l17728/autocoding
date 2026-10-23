@@ -21,6 +21,12 @@ for line in sys.stdin:
         continue
     result = {"type": "result", "session_id": sid, "user_message_uuid": mid,
               "user_message_uuids": [mid], "subtype": "success", "is_error": False}
+    if mode == "tool-no-uuid":
+        send({"type": "assistant", "session_id": sid, "parent_tool_use_id": None,
+              "message": {"role": "assistant", "content": [
+                  {"type": "tool_use", "id": "tool-no-uuid", "name": "Bash", "input": {"command": "true"}}]}})
+        send(result)
+        continue
     if mode == "early":
         send(result)
         time.sleep(.05)

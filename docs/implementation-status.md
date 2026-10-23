@@ -445,3 +445,8 @@ Owner 只提供目标、资料、边界和业务验收意图。PM 负责计划�
 - 对账 BookPlayer 当前批次时确认其创建参数为 `agents=["claude"]`、`max_concurrency=1`；Codex 与 OpenCode 的 Agent 健康状态均为 `available`，但没有进入该批次候选。平台自身的 autocoding 项目另有 OpenCode 受管任务在运行。
 - 根因是 UI 执行 Agent 默认值为 Claude 单选，用户不显式切换“三 Agent 并发”就会创建 Claude-only 批次。新批次现默认选择 PM 自动分配三种 Agent，最大并发 3；切换项目也恢复该默认值，仍可手动指定单一 Agent。已运行批次不被改写或中断。
 - TypeScript 检查与前端生产构建通过，新资源已由服务首页提供。当前 BookPlayer Claude 任务已进入运行中，继续观察其自然结束；后端持久化修复仍待所有活动任务结束后安全重启。
+## 2026-10-23 Claude 确认与恢复循环修复
+
+- Claude CLI 在顶层工具调用帧省略输入 UUID 时，平台现在只在同一会话存在唯一未完成轮次且帧包含工具调用时确认输入送达；最终轮次结果仍要求输入 UUID 匹配。增加无 UUID 工具帧回归。
+- Owner 对已停止的不确定运行完成对账后，PM 在当前服务进程自动唤醒对应批次；重复提交同一对账请求可再次触发安全唤醒，避免数据库已恢复但进程内循环未恢复时必须重启服务。
+- 验收：Claude 适配器 14 项通过；恢复接口和协调器唤醒回归通过。真实托管任务此前 3 次均在实现阶段出现 `RUN_DELIVERY_RECONCILIATION_REQUIRED`，未产生代码改动；本修复的真实 GLM 长任务验收待部署后重跑。

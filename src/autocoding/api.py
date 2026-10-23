@@ -841,8 +841,14 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
     @app.post(prefix + '/runs/{run_id}/recovery', dependencies=guarded)
     async def recovery_resolve(run_id: str, body: RecoveryInput, request: Request):
         from .recovery import Recovery
-        return await asyncio.to_thread(Recovery(host).resolve, run_id, **body.model_dump(),
-                                       key=request.headers['idempotency-key'])
+        result = await asyncio.to_thread(Recovery(host).resolve, run_id, **body.model_dump(),
+                                         key=request.headers['idempotency-key'])
+        # Recovery's ledger write is already idempotent. Re-enter the PM loop
+        # after every successful/replayed receipt so a crash between that write
+        # and this wake-up cannot strand work until the next service restart.
+        if result.get('state') == 'todo':
+            await asyncio.to_thread(host.coordinator.resume_after_recovery)
+        return result
 
     @app.post(prefix + '/batches', dependencies=guarded)
     async def batch(body: BatchInput, request: Request):

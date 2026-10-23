@@ -246,6 +246,15 @@ class Coordinator:
                 reason=getattr(exc,'code','BATCH_RECOVERY_RECONCILIATION_REQUIRED')
                 self.save(record,'reconciling',reason=reason,**stop_details(reason))
 
+    def resume_after_recovery(self):
+        """Resume a stopped durable batch after its uncertain run is retired."""
+        if self.current is not None or self.host.paused:
+            return False
+        if not any(record.get('state') == 'reconciling' for record in self.list()):
+            return False
+        self.recover()
+        return True
+
     async def start(self, task_ids, *, max_attempts=2, agent='claude', agents=None, max_concurrency=1):
         agents = agents if agents is not None else [agent]
         if (not isinstance(agents,list) or not agents or len(agents)>3 or

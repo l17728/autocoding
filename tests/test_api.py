@@ -5,7 +5,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
@@ -58,6 +58,24 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(first.json(),self.client.post(path,headers=headers,json=body).json())
         self.host.propose.assert_awaited_once();self.host.coordinator.start.assert_awaited_once()
         self.assertEqual(first.json()['id'],self.client.get(self.prefix+'/pm/delegations',headers=self.headers).json()[0]['id'])
+
+    def test_recovery_reenters_pm_batch_loop_on_receipt_replay(self):
+        from autocoding.recovery import Recovery
+        result={'task_id':'task_a','state':'todo','execution_started':False}
+        with patch.object(Recovery,'resolve',return_value=result) as resolve:
+            self.host.coordinator.resume_after_recovery=Mock(return_value=True)
+            response=self.client.post(self.prefix+'/runs/run_a/recovery',
+                headers={**self.headers,'Idempotency-Key':'recovery-resume'},
+                json={'fingerprint':'a'*64,'note':'Confirmed stopped and preserved evidence','stopped':True})
+            self.assertEqual(200,response.status_code,response.text)
+            self.assertEqual(result,response.json())
+            self.host.coordinator.resume_after_recovery.assert_called_once_with()
+            replay=self.client.post(self.prefix+'/runs/run_a/recovery',
+                headers={**self.headers,'Idempotency-Key':'recovery-resume'},
+                json={'fingerprint':'a'*64,'note':'Confirmed stopped and preserved evidence','stopped':True})
+            self.assertEqual(response.json(),replay.json())
+            self.assertEqual(2,resolve.call_count)
+            self.assertEqual(2,self.host.coordinator.resume_after_recovery.call_count)
 
     def test_owner_profile_auth_revision_and_idempotency(self):
         path=self.prefix+'/pm/profile'

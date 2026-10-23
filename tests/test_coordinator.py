@@ -41,6 +41,17 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
     def task(self,tid,deps=None):
         self.host.core.create_task(tid,tid,['unit'],deps or [],key=tid)
 
+    async def test_recovery_wakeup_only_restarts_an_idle_reconciling_batch(self):
+        record={'id':'batch_recovery','task_ids':['task_a'],'created_at':self.host.core.clock(),
+                'max_attempts':3,'attempts':{'task_a':1},'run_ids':[]}
+        self.host.coordinator.save(record,'reconciling',reason='RUN_DELIVERY_RECONCILIATION_REQUIRED',active_tasks=[])
+        with patch.object(self.host.coordinator,'recover') as recover:
+            self.assertTrue(self.host.coordinator.resume_after_recovery())
+            recover.assert_called_once_with()
+            self.host.coordinator.current=record['id']
+            self.assertFalse(self.host.coordinator.resume_after_recovery())
+            recover.assert_called_once_with()
+
     def configuration(self,tid):
         with self.host.core.connection() as conn:
             task=dict(self.host.core._get(conn,'tasks',tid))
