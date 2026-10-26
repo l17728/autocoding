@@ -35,6 +35,8 @@ class ClaudeSession:
         self.last_error_diagnostic = None
         self._frames_seen = 0
         self._last_frame_diagnostic = None
+        self._frame_type_counts = {}
+        self._turn_correlated_frames = {}
         self._reader = asyncio.create_task(self._dispatch(), name="claude-dispatch")
 
     @classmethod
@@ -134,6 +136,16 @@ class ClaudeSession:
     def _handle(self, message):
         self._frames_seen += 1
         self._last_frame_diagnostic = self._event_diagnostic(message)
+        kind = message.get('type') if isinstance(message,dict) else type(message).__name__
+        if isinstance(kind,str):
+            self._frame_type_counts[kind] = self._frame_type_counts.get(kind,0)+1
+        correlated = isinstance(message,dict) and self.turn_id and (
+            any(message.get(field)==self.turn_id for field in ('uuid','user_message_uuid'))
+            or (isinstance(message.get('user_message_uuids'),list)
+                and self.turn_id in message['user_message_uuids']))
+        if correlated:
+            if isinstance(kind,str):
+                self._turn_correlated_frames[kind] = self._turn_correlated_frames.get(kind,0)+1
         kind = message.get("type")
         if not isinstance(kind, str):
             raise TransportError("PROTOCOL_MALFORMED")
@@ -289,12 +301,15 @@ class ClaudeSession:
         event_type = message.get('type')
         if not isinstance(event_type, str) or len(event_type) > 100:
             event_type = type(event_type).__name__
+        subtype = message.get('subtype')
+        if not isinstance(subtype,str) or not 1<=len(subtype)<=80 or not all(c.isalnum() or c in '._-' for c in subtype):
+            subtype = None
         nested = message.get('message')
         blocks = nested.get('content') if isinstance(nested, dict) else None
         block_types = sorted({block.get('type') for block in blocks
                               if isinstance(block, dict) and isinstance(block.get('type'), str)})[:16] \
                       if isinstance(blocks, list) else []
-        return {'event_type': event_type,
+        return {'event_type': event_type, 'event_subtype': subtype,
                 'frame_keys': sorted(k for k in message if isinstance(k, str)
                                      and len(k) <= 80 and k.replace('_', '').isalnum())[:24],
                 'message_keys': sorted(k for k in nested if isinstance(k, str)
@@ -329,6 +344,10 @@ class ClaudeSession:
                 self.last_error_diagnostic = {
                     'failure_phase': 'ack_wait',
                     'frames_seen': self._frames_seen,
+                    'frame_type_counts': dict(sorted(self._frame_type_counts.items(),
+                                                     key=lambda item:(-item[1],item[0]))[:16]),
+                    'turn_correlated_frame_counts': dict(sorted(self._turn_correlated_frames.items(),
+                                                                key=lambda item:(-item[1],item[0]))[:16]),
                     'last_frame': self._last_frame_diagnostic,
                 }
                 self._fail("CLAUDE_ACK_TIMEOUT_DELIVERY_UNKNOWN")

@@ -15,6 +15,10 @@ for line in sys.stdin:
     sid, mid = message["session_id"], message["uuid"]
     if mode == "silent":
         continue
+    if mode == "system-frame-silent":
+        send({"type":"system","subtype":"status","session_id":sid,
+              "user_message_uuid":mid,"uuid":"PRIVATE_CANARY"})
+        continue
     send({"type": "system", "subtype": "init", "session_id": sid, "private": "PRIVATE_CANARY"})
     if mode == "unsupported-event":
         send({**message, "isReplay": True})

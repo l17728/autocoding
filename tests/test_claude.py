@@ -76,6 +76,17 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(TransportError, "RECONCILIATION_REQUIRED"):
             await runtime.send(command, "中文输入")
 
+    async def test_ack_timeout_records_redacted_frame_shape_and_correlation(self):
+        runtime = await self.runtime("system-frame-silent", timeout=5)
+        command = self.core.enqueue("claude_test", "pm", 0, "ack diagnostic probe", key="system-frame-silent")["command_id"]
+        with self.assertRaisesRegex(TransportError, "ACK_TIMEOUT"):
+            await runtime.send(command, "ack diagnostic probe")
+        diagnostic=runtime.adapter.last_error_diagnostic
+        self.assertEqual({'system':1},diagnostic['frame_type_counts'])
+        self.assertEqual({'system':1},diagnostic['turn_correlated_frame_counts'])
+        self.assertEqual('status',diagnostic['last_frame']['event_subtype'])
+        self.assertNotIn('PRIVATE_CANARY',json.dumps(diagnostic))
+
     async def test_correlated_assistant_turn_is_an_ack_without_legacy_replay(self):
         runtime = await self.runtime("no-replay")
         command = self.enqueue('no-replay')
