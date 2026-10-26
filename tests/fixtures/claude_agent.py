@@ -16,7 +16,7 @@ for line in sys.stdin:
     if mode == "silent":
         continue
     if mode == "system-frame-silent":
-        send({"type":"system","subtype":"status","session_id":sid,
+        send({"type":"system","subtype":"heartbeat","session_id":sid,
               "user_message_uuid":mid,"uuid":"PRIVATE_CANARY"})
         continue
     send({"type": "system", "subtype": "init", "session_id": sid, "private": "PRIVATE_CANARY"})
@@ -27,6 +27,14 @@ for line in sys.stdin:
         continue
     result = {"type": "result", "session_id": sid, "user_message_uuid": mid,
               "user_message_uuids": [mid], "subtype": "success", "is_error": False}
+    if mode == "system-status-ack":
+        send({"type":"system","subtype":"status","session_id":sid,
+              "user_message_uuid":mid})
+        send({"type":"assistant","session_id":sid,"user_message_uuid":mid,
+              "user_message_uuids":[mid],"parent_tool_use_id":None,
+              "message":{"role":"assistant","content":[{"type":"text","text":"Status receipt handled."}]}})
+        send(result)
+        continue
     if mode == "tool-progress":
         send({**message, "isReplay": True})
         send({"type":"tool_progress","session_id":sid,"tool_name":"Bash",

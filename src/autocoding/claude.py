@@ -198,7 +198,18 @@ class ClaudeSession:
             return
         if message.get("session_id") != self.thread_id:
             raise TransportError("CLAUDE_SESSION_MISMATCH")
-        if kind in {"system", "command_lifecycle"}:
+        if kind == 'system':
+            # The Zhipu-backed CLI emits a correlated system/status frame
+            # before the legacy replay-user receipt. Its exact input UUID and
+            # session match prove delivery, but this is never completion.
+            if (message.get('subtype') == 'status' and self.turn_id
+                    and message.get('user_message_uuid') == self.turn_id
+                    and not self._result_received and self._ack is not None
+                    and not self._ack.done()):
+                self._ack.set_result(True)
+                self._input = None
+            return
+        if kind == "command_lifecycle":
             return  # Local metadata is neither a receipt nor public model text.
         if kind == 'tool_progress':
             name=message.get('tool_name')

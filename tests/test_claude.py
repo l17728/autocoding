@@ -84,8 +84,18 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         diagnostic=runtime.adapter.last_error_diagnostic
         self.assertEqual({'system':1},diagnostic['frame_type_counts'])
         self.assertEqual({'system':1},diagnostic['turn_correlated_frame_counts'])
-        self.assertEqual('status',diagnostic['last_frame']['event_subtype'])
+        self.assertEqual('heartbeat',diagnostic['last_frame']['event_subtype'])
         self.assertNotIn('PRIVATE_CANARY',json.dumps(diagnostic))
+
+    async def test_correlated_system_status_acks_but_does_not_complete_turn(self):
+        runtime = await self.runtime("system-status-ack")
+        command = self.core.enqueue("claude_test", "pm", 0, "system status probe", key="system-status-ack")["command_id"]
+        receipt = await runtime.send(command, "system status probe")
+        self.assertEqual("acknowledged", receipt["state"])
+        self.assertEqual("acknowledged", self.core.command(command)["state"])
+        events = await self.finish(runtime, command)
+        self.assertTrue(any(event["method"] == "turn/completed" for event in events))
+        self.assertEqual("completed", self.core.command(command)["state"])
 
     async def test_correlated_assistant_turn_is_an_ack_without_legacy_replay(self):
         runtime = await self.runtime("no-replay")
@@ -135,7 +145,7 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('PRIVATE_CANARY', json.dumps(diagnostic))
 
     async def test_tool_progress_is_forwarded_without_raw_provider_frame(self):
-        runtime = await self.runtime('tool-progress')
+        runtime = await self.runtime('tool-progress', timeout=5)
         command = self.core.enqueue("claude_test", "pm", 0, "tool progress probe", key="tool-progress")["command_id"]
         await runtime.send(command, "tool progress probe")
         events = await self.finish(runtime, command)
