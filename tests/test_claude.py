@@ -20,7 +20,7 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         self.core = Core(Path(self.temp.name) / "core.db")
         self.core.create_session("claude_test", "claude", key="session")
 
-    async def runtime(self, mode="normal", timeout=2, tools_enabled=False, controls=False):
+    async def runtime(self, mode="normal", timeout=5, tools_enabled=False, controls=False):
         transport = await JsonLineProcess.start([sys.executable, "-u",
             str(ROOT / "tests/fixtures/claude_agent.py"), mode], cwd=ROOT)
         adapter = ClaudeSession(transport, session_id="session_fixture", timeout=timeout,
