@@ -176,6 +176,9 @@ class Reflection:
                 raise
             except Exception as exc:
                 record.update(state='failed',error=getattr(exc,'code','PM_REVIEW_FAILED'))
+                diagnostic=getattr(exc,'diagnostic',None)
+                if isinstance(diagnostic,dict):
+                    record['error_diagnostic']=self.host.redactor.value(diagnostic)
             finally:
                 with self.core.connection() as conn:
                     conn.execute('BEGIN IMMEDIATE')

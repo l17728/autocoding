@@ -10,6 +10,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from autocoding.host import Host
 from autocoding.core import DomainError
 from autocoding.redaction import Redactor
+from autocoding.transport import TransportError
 
 
 class ReflectionTests(unittest.IsolatedAsyncioTestCase):
@@ -153,3 +154,15 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.host.core,'clock',return_value=now+7201):
             self.assertEqual('completed',(await self.host.reflection.run(automatic=True))['state'])
         self.assertEqual(0,self.host.reflection._read('pm_review_cursor',{})['failures'])
+
+    async def test_provider_ack_failure_keeps_only_redacted_protocol_shape(self):
+        error=TransportError('CLAUDE_ACK_TIMEOUT_DELIVERY_UNKNOWN')
+        error.diagnostic={'failure_phase':'ack_wait','frames_seen':1,
+                          'last_frame':{'event_type':'system','frame_keys':['type','session_id']},
+                          'private':'PRIVATE_CANARY'}
+        self.host.pm_text=AsyncMock(side_effect=error)
+        result=await self.host.reflection.run(automatic=True)
+        self.assertEqual('failed',result['state'])
+        self.assertEqual('ack_wait',result['error_diagnostic']['failure_phase'])
+        self.assertEqual(1,result['error_diagnostic']['frames_seen'])
+        self.assertNotIn('PRIVATE_CANARY',json.dumps(result))

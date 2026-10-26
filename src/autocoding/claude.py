@@ -33,6 +33,8 @@ class ClaudeSession:
         self._permission_replies = {}
         self._tool_names = {}
         self.last_error_diagnostic = None
+        self._frames_seen = 0
+        self._last_frame_diagnostic = None
         self._reader = asyncio.create_task(self._dispatch(), name="claude-dispatch")
 
     @classmethod
@@ -130,6 +132,8 @@ class ClaudeSession:
             self._ack.set_result(True)
 
     def _handle(self, message):
+        self._frames_seen += 1
+        self._last_frame_diagnostic = self._event_diagnostic(message)
         kind = message.get("type")
         if not isinstance(kind, str):
             raise TransportError("PROTOCOL_MALFORMED")
@@ -322,6 +326,11 @@ class ClaudeSession:
                 await asyncio.wait_for(asyncio.shield(self._ack), timeout=self.timeout)
                 return {"state": "acknowledged", "thread_id": self.thread_id, "turn_id": self.turn_id}
             except TimeoutError:
+                self.last_error_diagnostic = {
+                    'failure_phase': 'ack_wait',
+                    'frames_seen': self._frames_seen,
+                    'last_frame': self._last_frame_diagnostic,
+                }
                 self._fail("CLAUDE_ACK_TIMEOUT_DELIVERY_UNKNOWN")
                 raise TransportError("CLAUDE_ACK_TIMEOUT_DELIVERY_UNKNOWN") from None
             except asyncio.CancelledError:

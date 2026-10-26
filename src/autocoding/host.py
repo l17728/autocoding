@@ -195,6 +195,10 @@ class Host:
                             if event['params']['turn']['status']!='completed':
                                 raise DomainError('PM_MODEL_FAILED')
                             return last
+            except TransportError as exc:
+                if adapter.last_error_diagnostic:
+                    exc.diagnostic = adapter.last_error_diagnostic
+                raise
             finally:
                 await adapter.close()
 

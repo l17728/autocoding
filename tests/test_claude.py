@@ -71,6 +71,8 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(TransportError, "ACK_TIMEOUT"):
             await runtime.send(command, "中文输入")
         self.assertEqual("delivery_unknown", self.core.command(command)["state"])
+        self.assertEqual('ack_wait', runtime.adapter.last_error_diagnostic['failure_phase'])
+        self.assertEqual(0, runtime.adapter.last_error_diagnostic['frames_seen'])
         with self.assertRaisesRegex(TransportError, "RECONCILIATION_REQUIRED"):
             await runtime.send(command, "中文输入")
 
