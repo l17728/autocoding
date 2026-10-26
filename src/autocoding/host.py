@@ -181,7 +181,7 @@ class Host:
             env.update(CLAUDE_CONFIG_DIR=str(private/'config'),CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1')
             adapter = await ClaudeSession.connect(binary,cwd=self.root,env=env,model=config.model,timeout=90,skip_permissions=True)
             try:
-                async with asyncio.timeout(120):
+                async with asyncio.timeout(300):
                     await adapter.send_text(prompt,command_id='pm_decision_'+uuid.uuid4().hex)
                     last, size = '', 0
                     while True:

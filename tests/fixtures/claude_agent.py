@@ -27,8 +27,9 @@ for line in sys.stdin:
         continue
     result = {"type": "result", "session_id": sid, "user_message_uuid": mid,
               "user_message_uuids": [mid], "subtype": "success", "is_error": False}
-    if mode == "system-status-ack":
-        send({"type":"system","subtype":"status","session_id":sid,
+    if mode in {"system-status-ack", "system-thinking-ack"}:
+        subtype="status" if mode == "system-status-ack" else "thinking_tokens"
+        send({"type":"system","subtype":subtype,"session_id":sid,
               "user_message_uuid":mid})
         send({"type":"assistant","session_id":sid,"user_message_uuid":mid,
               "user_message_uuids":[mid],"parent_tool_use_id":None,

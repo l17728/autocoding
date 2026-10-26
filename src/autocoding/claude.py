@@ -199,10 +199,10 @@ class ClaudeSession:
         if message.get("session_id") != self.thread_id:
             raise TransportError("CLAUDE_SESSION_MISMATCH")
         if kind == 'system':
-            # The Zhipu-backed CLI emits a correlated system/status frame
-            # before the legacy replay-user receipt. Its exact input UUID and
-            # session match prove delivery, but this is never completion.
-            if (message.get('subtype') == 'status' and self.turn_id
+            # The Zhipu-backed CLI emits correlated status/thinking progress
+            # frames before the legacy replay-user receipt. The exact input
+            # UUID and session match prove delivery, never turn completion.
+            if (message.get('subtype') in {'status','thinking_tokens'} and self.turn_id
                     and message.get('user_message_uuid') == self.turn_id
                     and not self._result_received and self._ack is not None
                     and not self._ack.done()):

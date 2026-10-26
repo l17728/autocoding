@@ -87,15 +87,17 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('heartbeat',diagnostic['last_frame']['event_subtype'])
         self.assertNotIn('PRIVATE_CANARY',json.dumps(diagnostic))
 
-    async def test_correlated_system_status_acks_but_does_not_complete_turn(self):
-        runtime = await self.runtime("system-status-ack")
-        command = self.core.enqueue("claude_test", "pm", 0, "system status probe", key="system-status-ack")["command_id"]
-        receipt = await runtime.send(command, "system status probe")
-        self.assertEqual("acknowledged", receipt["state"])
-        self.assertEqual("acknowledged", self.core.command(command)["state"])
-        events = await self.finish(runtime, command)
-        self.assertTrue(any(event["method"] == "turn/completed" for event in events))
-        self.assertEqual("completed", self.core.command(command)["state"])
+    async def test_correlated_system_progress_acks_but_does_not_complete_turn(self):
+        for mode in ("system-status-ack", "system-thinking-ack"):
+            with self.subTest(mode=mode):
+                runtime = await self.runtime(mode)
+                command = self.core.enqueue("claude_test", "pm", 0, "system progress probe", key=mode)["command_id"]
+                receipt = await runtime.send(command, "system progress probe")
+                self.assertEqual("acknowledged", receipt["state"])
+                self.assertEqual("acknowledged", self.core.command(command)["state"])
+                events = await self.finish(runtime, command)
+                self.assertTrue(any(event["method"] == "turn/completed" for event in events))
+                self.assertEqual("completed", self.core.command(command)["state"])
 
     async def test_correlated_assistant_turn_is_an_ack_without_legacy_replay(self):
         runtime = await self.runtime("no-replay")
