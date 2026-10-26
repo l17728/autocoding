@@ -199,6 +199,10 @@ class Host:
                 if adapter.last_error_diagnostic:
                     exc.diagnostic = adapter.last_error_diagnostic
                 raise
+            except TimeoutError:
+                error=DomainError('PM_RESPONSE_TIMEOUT')
+                error.diagnostic=adapter.activity_diagnostic('response_wait')
+                raise error from None
             finally:
                 await adapter.close()
 

@@ -37,6 +37,8 @@ class ClaudeSession:
         self._last_frame_diagnostic = None
         self._frame_type_counts = {}
         self._turn_correlated_frames = {}
+        self._assistant_text_blocks = 0
+        self._assistant_text_bytes = 0
         self._reader = asyncio.create_task(self._dispatch(), name="claude-dispatch")
 
     @classmethod
@@ -93,6 +95,16 @@ class ClaudeSession:
                 "threadId": self.thread_id, **params}})
         except asyncio.QueueFull:
             raise TransportError("OUTPUT_BACKPRESSURE") from None
+
+    def activity_diagnostic(self, failure_phase):
+        return {'failure_phase': failure_phase, 'frames_seen': self._frames_seen,
+                'frame_type_counts': dict(sorted(self._frame_type_counts.items(),
+                                                 key=lambda item:(-item[1],item[0]))[:16]),
+                'turn_correlated_frame_counts': dict(sorted(self._turn_correlated_frames.items(),
+                                                            key=lambda item:(-item[1],item[0]))[:16]),
+                'assistant_text_blocks': self._assistant_text_blocks,
+                'assistant_text_bytes': self._assistant_text_bytes,
+                'last_frame': self._last_frame_diagnostic}
 
     def _correlated(self, message):
         self.last_correlation = {'type': message.get('type'), 'has_turn': bool(self.turn_id),
@@ -270,6 +282,8 @@ class ClaudeSession:
                 if not isinstance(block, dict) or not isinstance(block.get("type"), str):
                     raise TransportError("PROTOCOL_MALFORMED")
                 if block.get("type") == "text" and isinstance(block.get("text"), str):
+                    self._assistant_text_blocks += 1
+                    self._assistant_text_bytes += len(block['text'].encode('utf-8'))
                     self._emit("item/agentMessage/delta", turnId=self.turn_id, delta=block["text"])
                 elif block.get('type') == 'tool_use' and self.tools_enabled:
                     tool_id=block.get('id')
@@ -352,15 +366,7 @@ class ClaudeSession:
                 await asyncio.wait_for(asyncio.shield(self._ack), timeout=self.timeout)
                 return {"state": "acknowledged", "thread_id": self.thread_id, "turn_id": self.turn_id}
             except TimeoutError:
-                self.last_error_diagnostic = {
-                    'failure_phase': 'ack_wait',
-                    'frames_seen': self._frames_seen,
-                    'frame_type_counts': dict(sorted(self._frame_type_counts.items(),
-                                                     key=lambda item:(-item[1],item[0]))[:16]),
-                    'turn_correlated_frame_counts': dict(sorted(self._turn_correlated_frames.items(),
-                                                                key=lambda item:(-item[1],item[0]))[:16]),
-                    'last_frame': self._last_frame_diagnostic,
-                }
+                self.last_error_diagnostic = self.activity_diagnostic('ack_wait')
                 self._fail("CLAUDE_ACK_TIMEOUT_DELIVERY_UNKNOWN")
                 raise TransportError("CLAUDE_ACK_TIMEOUT_DELIVERY_UNKNOWN") from None
             except asyncio.CancelledError:

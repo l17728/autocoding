@@ -14,6 +14,25 @@ from autocoding.transport import JsonLineProcess
 
 
 class HostTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pm_response_timeout_preserves_only_safe_activity_diagnostic(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        adapter=SimpleNamespace(send_text=AsyncMock(return_value={'state':'acknowledged'}),
+            next_event=AsyncMock(side_effect=TimeoutError()),close=AsyncMock(),
+            last_error_diagnostic=None,
+            activity_diagnostic=lambda phase:{'failure_phase':phase,'frames_seen':12,
+                                                'last_frame':{'event_type':'system','event_subtype':'thinking_tokens'}})
+        config=SimpleNamespace(api_key='PRIVATE_TEST_KEY',model='glm-5.3')
+        with patch('autocoding.host.native_executable',return_value='claude.exe'), \
+             patch('autocoding.host.resolve_zhipu',return_value=config), \
+             patch('autocoding.host.claude_environment',return_value={}), \
+             patch('autocoding.host.ClaudeSession.connect',new=AsyncMock(return_value=adapter)):
+            with self.assertRaises(DomainError) as caught:
+                await self.host.pm_text('review probe',include_learning=False)
+        self.assertEqual('PM_RESPONSE_TIMEOUT',caught.exception.code)
+        self.assertEqual('response_wait',caught.exception.diagnostic['failure_phase'])
+        adapter.close.assert_awaited_once()
+
     async def test_managed_mcp_is_injected_for_all_providers_and_preserved_on_resume(self):
         import json
         from unittest.mock import AsyncMock, patch
