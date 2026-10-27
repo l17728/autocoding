@@ -57,16 +57,19 @@ async def main():
     host=Host(project,output/'storage')
     async def disabled(*args,**kwargs):raise DomainError('ZHIPU_DEFERRED')
     host.pm_text=disabled
+    stage='startup'
     report={'passed':False,'fault':'probe_scoped_HTTPS_tunnel_disconnect','outage_seconds':10,
         'natural_provider_outage':False,'system_network_changed':False,'zhipu_calls':0}
     started=time.monotonic()
     try:
         first=await host.start('codex');sid=first['session_id']
+        stage='initial_turn'
         marker='CONTEXT_'+uuid.uuid4().hex
         if await turn(host,sid,'Without tools or files remember '+marker+'. Reply OK.','first')!='completed':
             raise DomainError('FIRST_TURN_FAILED')
         if not proxy.connections or not proxy.bytes:raise DomainError('PROXY_NOT_OBSERVED')
-        command=await host.send(sid,0,'Without tools or files list the integers 1 through 1000, one per line.',key='network-turn')
+        command=await host.send(sid,0,'Without tools or files list the integers 1 through 100, one per line.',key='network-turn')
+        stage='wait_fault_window'
         async with asyncio.timeout(60):
             while host.core.command(command['command_id'])['state'] in {'queued','dispatching'}:await asyncio.sleep(.02)
         if host.core.command(command['command_id'])['state']!='acknowledged' or not proxy.writers:
@@ -76,6 +79,7 @@ async def main():
         for writer in list(proxy.writers):writer.close()
         await asyncio.sleep(10)
         proxy.blocked=False
+        stage='wait_recovery'
         async with asyncio.timeout(180):
             while host.core.command(command['command_id'])['state']=='acknowledged':await asyncio.sleep(.1)
         report['fault_turn_state']=host.core.command(command['command_id'])['state']
@@ -86,7 +90,14 @@ async def main():
             text=''.join(e.get('text','') for e in host.output if e['seq']>before and e['session_id']==sid)
             report['context_retained']=marker in text
             report['passed']=report['no_new_platform_command'] and report['followup_state']=='completed' and report['context_retained']
-    except Exception as exc:report['error']=getattr(exc,'code',type(exc).__name__)
+    except Exception as exc:
+        report['error']=getattr(exc,'code',type(exc).__name__)
+        report['failure_stage']=stage
+        report['command_states']=[item['state'] for item in host.core.snapshot()['commands']]
+        report['session_states']=[item['state'] for item in host.core.snapshot()['sessions']]
+        report['restart_counts']=sorted({int(value.get('restart_count',0)) for value in host.metadata.values()})
+        report['recent_output_shapes']=[{'type':item.get('type'),'code':item.get('code')}
+            for item in host.output[-12:]]
     finally:
         proxy.blocked=False
         await host.close()

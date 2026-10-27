@@ -1,8 +1,17 @@
 """Owner-facing PM work dialogue backed by the durable project ledger."""
 import json
 import re
+import uuid
 
-from .core import DomainError, encoded
+from .core import DomainError, digest, encoded
+
+STATUS_REPORT_INTERVAL = 1
+STATUS_RELEVANT_EVENTS = frozenset({
+    'TaskRunChanged', 'TaskBatchChanged', 'TaskDone', 'TaskRequeued', 'TaskBlocked',
+    'TaskCreated', 'TaskLeased', 'AgentHealthChanged', 'ProjectPauseChanged',
+    'OwnerReconciledAttempt', 'TaskVerificationAutomated', 'IntegrationVerified',
+    'ProjectClosureCreated',
+})
 
 
 class PMDialogue:
@@ -27,18 +36,30 @@ class PMDialogue:
             return payload
         return self.core._write(actor, 'pm_dialogue_append', message_id, request, action)
 
-    def list(self, offset=0, limit=100):
+    def list(self, offset=0, limit=100, query=''):
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 100:
             raise DomainError('INVALID_DIALOGUE_PAGE')
-        # Newest first makes the bounded default page useful for an ongoing conversation.
+        if not isinstance(query, str) or len(query) > 200:
+            raise DomainError('INVALID_DIALOGUE_QUERY')
+        query = query.strip().casefold()
+        # Search and count in SQLite so an old, long-running conversation stays bounded.
+        where = "key GLOB 'pm_dialogue:*'"
+        params = []
+        if query:
+            needle = '%' + query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+            where += " AND (LOWER(json_extract(value,'$.content')) LIKE ? ESCAPE '\\' " \
+                     "OR LOWER(json_extract(value,'$.kind')) LIKE ? ESCAPE '\\' " \
+                     "OR EXISTS (SELECT 1 FROM json_each(value,'$.references') ref " \
+                     "WHERE LOWER(json_extract(ref.value,'$.id')) LIKE ? ESCAPE '\\'))"
+            params.extend([needle, needle, needle])
         with self.core.connection() as conn:
-            total = conn.execute("SELECT COUNT(*) FROM metadata WHERE key GLOB 'pm_dialogue:*'").fetchone()[0]
-            rows = conn.execute("SELECT value FROM metadata WHERE key GLOB 'pm_dialogue:*' "
-                                "ORDER BY json_extract(value,'$.created_at') DESC,key DESC LIMIT ? OFFSET ?",
-                                (limit, offset)).fetchall()
+            total = conn.execute('SELECT COUNT(*) FROM metadata WHERE '+where, params).fetchone()[0]
+            rows = conn.execute('SELECT value FROM metadata WHERE '+where+
+                                " ORDER BY json_extract(value,'$.created_at') DESC,key DESC LIMIT ? OFFSET ?",
+                                (*params, limit, offset)).fetchall()
         items = [json.loads(row['value']) for row in rows]
         return {'items': list(reversed(items)), 'offset': offset, 'limit': limit,
-                'has_older': total > offset + len(items)}
+                'has_older': total > offset + len(items), 'total': total, 'query': query}
 
     def status(self):
         snap = self.host.dashboard.snapshot()
@@ -46,14 +67,89 @@ class PMDialogue:
         batch = batches[-1] if batches else {}
         active_states = {'preparing', 'starting', 'running', 'reviewing', 'verifying'}
         active = [run for run in snap.get('runs', []) if run.get('state') in active_states]
-        return {'project_id': self.host.project_id, 'progress': snap.get('pm_progress', {}),
+        result = {'project_id': self.host.project_id, 'progress': snap.get('pm_progress', {}),
                 'task_counts': snap.get('task_counts', {}),
                 'total_tasks': snap.get('totals', {}).get('tasks', 0),
+                'paused': bool(self.host.paused),
                 'batch': {k: batch.get(k) for k in
                           ('id', 'state', 'reason', 'owner_next_action', 'active_tasks') if k in batch},
                 'active_tasks': [{'task_id': r.get('task_id'), 'provider': r.get('provider'),
                                   'state': r.get('state'), 'phase': r.get('phase')} for r in active],
                 'agent_health': snap.get('agent_health', [])}
+        self._report_status_change(result)
+        return result
+
+    def _report_status_change(self, status):
+        """Persist one concise PM message when material project state changes."""
+        batch = status.get('batch', {})
+        material = {'batch_id': batch.get('id'), 'batch_state': batch.get('state'),
+                    'reason': batch.get('reason'), 'done': status.get('task_counts', {}).get('done', 0),
+                    'total': status.get('total_tasks'), 'paused': status.get('paused', False),
+                    'active': status.get('active_tasks', [])}
+        fingerprint = digest(material)
+        key = '_pm_dialogue:last_status_fingerprint'
+        with self.core.connection() as conn:
+            row = conn.execute('SELECT value FROM metadata WHERE key=?', (key,)).fetchone()
+        if row and json.loads(row['value']) == fingerprint:
+            return
+
+        def action(conn):
+            row = conn.execute('SELECT value FROM metadata WHERE key=?', (key,)).fetchone()
+            previous = json.loads(row['value']) if row else None
+            if previous == fingerprint:
+                return
+            conn.execute('INSERT INTO metadata VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                         (key, encoded(fingerprint)))
+            if previous is None:
+                return
+            done, total = material['done'], material['total'] or 0
+            active = material['active']
+            if material['paused']:
+                content = f"项目状态变化：已暂停新任务派发。已验收 {done}/{total} 项。"
+            elif batch.get('reason'):
+                content = (f"项目状态变化：批次 {batch.get('state', '未知')}，暂停原因 {batch['reason']}。"
+                           f"{batch.get('owner_next_action') or ''}")
+            elif done >= total and total:
+                content = f"项目任务清单已全部验收：{done}/{total} 项。PM 正在进行最终收尾核对。"
+            elif active:
+                item = active[0]
+                content = (f"进展更新：{item.get('task_id')} 由 {item.get('provider') or 'PM'} 推进，"
+                           f"阶段 {item.get('phase') or item.get('state')}；已验收 {done}/{total} 项。")
+            else:
+                content = (f"进展更新：当前没有活动任务；已验收 {done}/{total} 项。"
+                           f"批次状态：{batch.get('state', '尚无')}。")
+            message_id = 'pm_event_' + uuid.uuid4().hex
+            payload = {'id': message_id, 'project_id': self.host.project_id, 'actor': 'pm',
+                       'kind': 'report', 'content': self.host.redactor.text(content)[:12000],
+                       'references': ([{'type': 'batch', 'id': batch['id']}] if batch.get('id') else []),
+                       'state': 'saved', 'created_at': self.core.clock()}
+            conn.execute('INSERT OR IGNORE INTO metadata VALUES (?,?)',
+                         ('pm_dialogue:' + message_id, encoded(payload)))
+            self.core._event(conn, 'PMDialogueMessageAdded', 'pm', message_id=message_id,
+                             message_kind='report', state='saved')
+        self.core._write('pm', 'pm_dialogue_status_report', digest([fingerprint, self.core.clock()]), material, action)
+
+    async def run_reporter(self):
+        """Watch durable status events independently of an open browser page."""
+        import asyncio
+        await asyncio.to_thread(self.status)
+        cursor = await asyncio.to_thread(self.core.latest_event_sequence)
+        error_delay = STATUS_REPORT_INTERVAL
+        while True:
+            try:
+                events = await asyncio.to_thread(self.core.events, cursor, 500)
+                if events:
+                    cursor = events[-1]['seq']
+                    if any(event['type'] in STATUS_RELEVANT_EVENTS for event in events):
+                        await asyncio.to_thread(self.status)
+            except Exception as exc:
+                self.host._output(None, 'error', code='PM_STATUS_REPORT_FAILED',
+                                  error_type=type(exc).__name__)
+                await asyncio.sleep(error_delay)
+                error_delay = min(30, error_delay * 2)
+                continue
+            error_delay = STATUS_REPORT_INTERVAL
+            await asyncio.sleep(STATUS_REPORT_INTERVAL)
 
     @staticmethod
     def _intent(text):
@@ -131,10 +227,21 @@ class PMDialogue:
 
         if intent == 'discussion':
             status = self.status()
-            batch = status['batch']
-            reply = (f"我已记录这项讨论。当前批次为 {batch.get('state', '尚无批次')}，"
-                     f"总体进度约 {status['progress'].get('percent', 0)}%。我会结合任务和验收证据评估影响；"
-                     "目前尚未改动计划或派发开发任务。")
+            context = {'status': status, 'recent_messages': self.list(limit=12)['items'][:-1],
+                       'tasks': self.host.core.snapshot().get('tasks', [])[:100]}
+            prompt = ('作为本项目 PM，回答 Owner 的讨论。先直接回应，再简要列出影响、风险/未知项和建议下一步。'
+                      '只依据当前输入、下方项目事实和历史对话；不得声称已执行、修改计划或派发任务。'
+                      '若信息不足，明确指出具体缺口。\n项目上下文：' + json.dumps(context, ensure_ascii=False) +
+                      '\nOwner 讨论：' + safe)
+            try:
+                reply = (await self.host.pm_text(prompt))[:12000].strip()
+                if not reply:
+                    raise DomainError('PM_OUTPUT_INVALID')
+                reply += '\n\n此回复仅为讨论分析，尚未修改计划或派发开发任务。'
+            except Exception as exc:
+                code = getattr(exc, 'code', type(exc).__name__)
+                reply = (f"我已记录这项讨论，但当前无法完成模型分析（{code}）。"
+                         '项目事实和输入已保留；不会因此修改计划或派发任务。恢复条件满足后可在此继续讨论。')
             pm = self._append('pm_' + message_id, 'pm', 'discussion', reply)
             return {'owner_message': owner, 'reply': pm, 'status': status, 'action': 'discussion_recorded'}
 

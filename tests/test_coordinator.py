@@ -1,5 +1,7 @@
 import asyncio
+import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -51,6 +53,29 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
             self.host.coordinator.current=record['id']
             self.assertFalse(self.host.coordinator.resume_after_recovery())
             recover.assert_called_once_with()
+
+    async def test_dispatch_lock_is_shared_across_processes_and_released_after_exit(self):
+        self.task('task_process_lock')
+        fixture=Path(__file__).parent/'fixtures'/'process_lock_holder.py'
+        child=subprocess.Popen([sys.executable,str(fixture),str(self.host.storage/'coordinator-dispatch.lock')],
+                               stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        try:
+            ready=await asyncio.to_thread(child.stdout.readline)
+            self.assertEqual('LOCKED\n',ready)
+            with self.assertRaisesRegex(DomainError,'BATCH_DISPATCH_LOCKED'):
+                await self.host.coordinator.start(['task_process_lock'])
+            child.stdin.write('release\n');child.stdin.flush()
+            await asyncio.to_thread(child.wait,5)
+            await self.host.coordinator.start(['task_process_lock'])
+            self.release.set()
+            await self.until(lambda:self.host.coordinator.current is None)
+            self.assertEqual('verified_candidate',self.host.coordinator.list()[0]['state'])
+        finally:
+            if child.poll() is None:
+                child.kill();await asyncio.to_thread(child.wait)
+            for stream in (child.stdin,child.stdout,child.stderr):
+                if stream:
+                    stream.close()
 
     def configuration(self,tid):
         with self.host.core.connection() as conn:
@@ -199,6 +224,8 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual('done',self.host.core._get(conn,'tasks','task_b')['state'])
         batch=self.host.coordinator.list()[0]
         self.assertEqual('rework_required',batch['state'])
+        self.assertEqual('retry_exhausted',batch['stop_category'])
+        self.assertIn('无需等待模型额度恢复',batch['owner_next_action'])
         self.assertEqual('task_a',batch['stop_evidence'][0]['task_id'])
         self.assertEqual('BATCH_ATTEMPT_LIMIT',batch['stop_evidence'][0]['reason'])
 
@@ -218,6 +245,24 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('rework_required',blocked['state'])
         self.assertEqual('BATCH_TASKS_BLOCKED',blocked['reason'])
         self.assertEqual(['task_a'],blocked['blocked_by'])
+
+    async def test_legacy_attempt_limit_stop_is_normalized_when_loaded(self):
+        record={'id':'batch_legacy_stop','task_ids':['task_a'],'created_at':1,
+                'base_sha':'a'*40,'provider':'codex','attempts':{},'run_ids':[],
+                'max_attempts':3,'agents':['codex'],'max_concurrency':1,
+                'reason':'BATCH_ATTEMPT_LIMIT','stop_category':'model_limit',
+                'owner_next_action':'请等待模型额度恢复。'}
+        self.host.coordinator.save(record,'rework_required')
+
+        normalized=next(item for item in self.host.coordinator.list()
+                        if item['id']=='batch_legacy_stop')
+
+        self.assertEqual('retry_exhausted',normalized['stop_category'])
+        self.assertIn('无需等待模型额度恢复',normalized['owner_next_action'])
+        with self.host.core.connection() as conn:
+            stored=json.loads(conn.execute('SELECT value FROM metadata WHERE key=?',
+                ('batch:batch_legacy_stop',)).fetchone()['value'])
+        self.assertEqual('retry_exhausted',stored['stop_category'])
 
     async def test_restart_recovery_never_dispatches_past_batch_attempt_limit(self):
         self.task('task_a')
@@ -256,6 +301,7 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
             self.host._background=original_background
             for coroutine in scheduled:
                 coroutine.close()
+            self.host.coordinator._process_lock.release()
 
     async def test_persisted_match_detects_retry_with_unchanged_active_task_set(self):
         record={'id':'batch_retry','task_ids':['task_a'],'attempts':{'task_a':1},

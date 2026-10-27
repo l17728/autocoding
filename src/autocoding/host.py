@@ -71,6 +71,7 @@ class Host:
             from .cold_start import install
             install(self.core)
         self.review_task = None
+        self.dialogue_report_task = None
 
     def _restore_output(self):
         """Restore the bounded public transcript after a service restart."""
@@ -91,6 +92,8 @@ class Host:
     def start_services(self):
         if self.review_task is None or self.review_task.done():
             self.review_task = self._background(self.reflection.loop())
+        if self.dialogue_report_task is None or self.dialogue_report_task.done():
+            self.dialogue_report_task = self._background(self.pm_dialogue.run_reporter())
 
     def permission_mode(self):
         with self.core.connection() as conn:
@@ -416,8 +419,11 @@ class Host:
             await runtime.close()
             if restart:
                 self._background(self._restart(sid))
-        except Exception:
-            self._output(sid, 'error', code='SESSION_EVENT_FAILED')
+        except Exception as exc:
+            # Keep unexpected protocol/runtime failures diagnosable without
+            # persisting exception messages that may contain provider payloads.
+            self._output(sid, 'error', code='SESSION_EVENT_FAILED',
+                         error_type=type(exc).__name__)
             await runtime.close()
 
     async def _restart(self,sid):

@@ -6,9 +6,9 @@ type Review={id:string;state:string;summary?:string;error?:string;items:Item[];a
 type Knowledge={id:string;topic:string;revision:string;variants:(Item&{id:string;state:string;sources:{review_id:string}[]})[]};
 type Interaction={id:string;kind:string;content:unknown;state:string;request_reason?:string;reason?:string;answers?:unknown;answered_by?:string;context?:string;same_question_requests:number;created_at:number;delivery_state?:string};
 type InteractionPage={total:number;requests:number;owner_answers:number;repeat_requests:number;pending:number;items:Interaction[];notice:string};
-type State={settings:{enabled:boolean;interval_minutes:number};reviews:Review[];principles:string[];knowledge:Knowledge[];knowledge_total:number;self_check?:{task_states:Record<string,number>;pending_owner:number;repeat_requests:number;notice:string};outcomes:{current:{samples:number;score:number|null};previous:{samples:number;score:number|null};delta:number|null;interpretation:string};health:{state?:string;code?:string}};
+type State={settings:{enabled:boolean;interval_minutes:number};reviews:Review[];principles:string[];knowledge:Knowledge[];knowledge_total:number;self_check?:{task_states:Record<string,number>;pending_owner:number;repeat_requests:number;notice:string};outcomes:{current:{samples:number;score:number|null};previous:{samples:number;score:number|null};delta:number|null;interpretation:string};health:{state?:string;code?:string;failures?:number;at?:number;next_retry_at?:number}};
 const names:Record<string,string>={communication:'话术总结',lesson:'经验教训',principle:'工作原则',improvement:'改进动作'};
-export function ReflectionPanel({prefix,api}:{prefix:string;api:Api}) {
+export function ReflectionPanel({prefix,api,onHealth}:{prefix:string;api:Api;onHealth?:(health:State['health'])=>void}) {
   const [data,setData]=useState<State|null>(null),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
   const [enabled,setEnabled]=useState(true),[minutes,setMinutes]=useState(60);
   const [offset,setOffset]=useState(0);
@@ -25,6 +25,7 @@ export function ReflectionPanel({prefix,api}:{prefix:string;api:Api}) {
   }catch(e){if(active)setMessage(String(e))}finally{if(active)timer=setTimeout(poll,15000)}}
   void poll();return()=>{active=false;clearTimeout(timer)};
   },[prefix,offset]);
+  useEffect(()=>{if(data?.health)onHealth?.(data.health)},[data?.health,onHealth]);
   useEffect(()=>{let active=true;api(prefix+'/pm/reviews').then(next=>{if(active){setEnabled(next.settings.enabled);setMinutes(next.settings.interval_minutes)}}).catch(e=>{if(active)setMessage(String(e))});return()=>{active=false}},[prefix]);
   async function action(work:()=>Promise<any>){revision.current++;setBusy(true);setMessage('');try{const result=await work();revision.current++;setData(await api(reviewUrl));if(result?.state)setMessage(result.state==='no_new_evidence'?'没有新的活动可复盘。':result.state==='completed'?'自检完成，经验已进入本项目知识库。':`自检状态：${result.state}`)}catch(e){setMessage(String(e))}finally{setBusy(false)}}
   return <details className="panel reflection"><summary>PM 自检与知识库</summary>

@@ -252,12 +252,29 @@ class ClaudeSession:
                                activity=self._tool_names.pop(block['tool_use_id'],'Claude tool'),
                                detail=content[:8000])
                 return
-            if (not self.turn_id or message.get("uuid") != self.turn_id
-                    or message.get("isReplay") is not True
-                    or message.get("parent_tool_use_id") is not None
-                    or not isinstance(body, dict) or body.get("role") != "user"
-                    or body.get("content") != self._input
-                    or self._ack is None or self._ack.done()):
+            ack_done = self._ack is not None and self._ack.done()
+            if (ack_done and not self._ack.cancelled() and self._ack.exception() is None
+                    and self._input is None and message.get('uuid') == self.turn_id
+                    and message.get('isReplay') is True
+                    and message.get('parent_tool_use_id') is None
+                    and isinstance(body, dict) and body.get('role') == 'user'):
+                # Some CLI/gateway versions emit the user replay after a
+                # correlated system progress receipt already acknowledged
+                # this turn. It is a duplicate transcript frame, not another
+                # delivery attempt; it must not freeze the active response.
+                return
+            mismatch = {'turn_present': bool(self.turn_id),
+                        'turn_matches': bool(self.turn_id) and message.get('uuid') == self.turn_id,
+                        'replay_flag': message.get('isReplay') is True,
+                        'parent_tool_absent': message.get('parent_tool_use_id') is None,
+                        'body_is_object': isinstance(body, dict),
+                        'role_is_user': isinstance(body, dict) and body.get('role') == 'user',
+                        'content_matches': isinstance(body, dict) and body.get('content') == self._input,
+                        'ack_pending': self._ack is not None and not self._ack.done()}
+            if not all(mismatch.values()):
+                self.last_error_diagnostic = {'failure_phase':'ack_match',
+                                              'frame':self._event_diagnostic(message),
+                                              'checks':mismatch}
                 raise TransportError("CLAUDE_ACK_MISMATCH")
             self._ack.set_result(True)
             self._input = None

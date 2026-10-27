@@ -83,6 +83,23 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(['task_stale'],result['stale_leases'])
         self.assertEqual(['task_stale'],result['batch']['active_tasks'])
 
+    def test_delivered_command_session_counts_as_online_until_completion(self):
+        session=self.host.core.create_session('session_waiting','opencode',key='session-waiting')
+        command=self.host.core.enqueue(session['session_id'],'pm',session['epoch'],
+                                       'continue implementation',key='waiting-input')
+        self.host.core.begin_dispatch(command['command_id'],key='waiting-dispatch')
+        self.host.core.record_command(command['command_id'],'acknowledged',provider_turn_id='turn_1',
+                                      key='waiting-ack')
+
+        snapshot=self.dashboard.snapshot()
+        self.assertNotIn(session['session_id'],snapshot['live_ids'])
+        self.assertIn(session['session_id'],snapshot['online_session_ids'])
+        self.assertEqual(1,self.dashboard.liveness()['active_sessions'])
+
+        self.host.core.record_command(command['command_id'],'completed',key='waiting-complete')
+        self.assertNotIn(session['session_id'],self.dashboard.snapshot()['online_session_ids'])
+        self.assertEqual(0,self.dashboard.liveness()['active_sessions'])
+
     def test_snapshot_limits_conversations_to_latest_run_and_bounds_payload(self):
         self.host.core.create_task('task_history','Task with retries',['unit'],key='history')
         with self.host.core.connection() as conn:

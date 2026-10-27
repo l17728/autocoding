@@ -593,8 +593,8 @@ def create_app(host, owner_token, *, origin='http://127.0.0.1:8765', ui=None, re
         return await asyncio.to_thread(host.interactions.snapshot,offset,limit)
 
     @app.get(prefix+'/pm/dialogue',dependencies=guarded)
-    async def pm_dialogue(offset: int=0, limit: int=100):
-        return {'conversation':host.pm_dialogue.list(offset,limit),'status':host.pm_dialogue.status()}
+    async def pm_dialogue(offset: int=0, limit: int=100, q: str=''):
+        return {'conversation':host.pm_dialogue.list(offset,limit,q),'status':host.pm_dialogue.status()}
 
     @app.post(prefix+'/pm/dialogue/messages',dependencies=guarded)
     async def pm_dialogue_message(body: PMDialogueInput, request: Request):

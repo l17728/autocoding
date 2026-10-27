@@ -106,6 +106,9 @@ async def main():
         report['error'] = getattr(exc, 'code', type(exc).__name__)
         report['correlation'] = getattr(adapter, 'last_correlation', None)
         report['control'] = getattr(adapter, 'last_control', None)
+        # Adapter diagnostics contain only bounded protocol shape and boolean
+        # correlation checks; never persist provider frame or prompt values.
+        report['protocol_diagnostic'] = getattr(adapter, 'last_error_diagnostic', None)
     finally:
         if runtime:
             await runtime.close()

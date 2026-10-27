@@ -4,26 +4,26 @@ import './style.css';
 const TerminalPanel=lazy(()=>import('./TerminalPanel').then(module=>({default:module.TerminalPanel})));
 import {ProjectPanel} from './ProjectPanel';
 import {GlobalInputHistory} from './GlobalInputHistory';
-import {ReflectionPanel} from './ReflectionPanel';
-import {CoveragePanel} from './CoveragePanel';
-import {ExpertPanel} from './ExpertPanel';
-import {EvaluationPanel} from './EvaluationPanel';
-import {HistoryPanel} from './HistoryPanel';
-import {ClosurePanel} from './ClosurePanel';
-import {RecoveryPanel} from './RecoveryPanel';
-import {AcceptancePanel} from './AcceptancePanel';
+const ReflectionPanel=lazy(()=>import('./ReflectionPanel').then(module=>({default:module.ReflectionPanel})));
+const CoveragePanel=lazy(()=>import('./CoveragePanel').then(module=>({default:module.CoveragePanel})));
+const ExpertPanel=lazy(()=>import('./ExpertPanel').then(module=>({default:module.ExpertPanel})));
+const EvaluationPanel=lazy(()=>import('./EvaluationPanel').then(module=>({default:module.EvaluationPanel})));
+const HistoryPanel=lazy(()=>import('./HistoryPanel').then(module=>({default:module.HistoryPanel})));
+const ClosurePanel=lazy(()=>import('./ClosurePanel').then(module=>({default:module.ClosurePanel})));
+const RecoveryPanel=lazy(()=>import('./RecoveryPanel').then(module=>({default:module.RecoveryPanel})));
+const AcceptancePanel=lazy(()=>import('./AcceptancePanel').then(module=>({default:module.AcceptancePanel})));
 import {PMDialogue} from './PMDialogue';
 import {UpdateMonitor} from './UpdateMonitor';
 import {readResponse} from './api';
 
-type Session = {id:string; agent:string; state:string; owner:string; epoch:number};
+type Session = {id:string; agent:string; state:string; owner:string; epoch:number;startup_state?:string;startup_attempt?:number;startup_limit?:number;startup_error?:string};
 type Task = {id:string; description:string; state:string; attempt:number; agent?:string; reason?:string};
 type Run = {id:string; task_id:string; state:string; provider?:string; session_id?:string; phase?:string; head_sha?:string; reason?:string; artifact_sha256?:string; check_diagnostics?:Record<string,{status?:string;exit_code?:number;duration_seconds?:number;streams?:Record<string,{bytes?:number;sha256?:string;excerpt?:string;excerpt_truncated?:boolean}>}>; conversation?:{instruction:string;events:Output[]}};
 type AgentQuestion = {id:string; state:string; answered_by?:string; reason?:string; answers?:string[][]; questions:{id:string;question:string;options:{label:string;description:string}[];multiple:boolean;custom:boolean;secret:boolean}[]};
 type Batch = {id:string;state:string;reason?:string;stop_category?:string;owner_next_action?:string;candidate_sha?:string;completion_inventory?:{outside_scope_remaining:string[]}};
 type Approval = {id:string; state:string; session_id:string; revision:number; operation_hash:string};
 type AgentHealth = {agent:string;state:string;failures:number;reason?:string};
-type Snapshot = {tasks:Task[]; sessions:Session[]; approvals:Approval[]; latest_seq:number; paused:boolean; live_ids:string[]; runs:Run[]; questions:AgentQuestion[]; batches:Batch[];agent_health?:AgentHealth[];totals?:Record<string,number>;task_page?:{offset:number;next_offset:number|null;total:number};task_counts?:Record<string,number>;pm_progress?:{percent:number;completed_weight:number;total_weight:number;remaining_equivalent_tasks:number;basis:string};payloads_omitted?:number};
+type Snapshot = {tasks:Task[]; sessions:Session[]; commands?:{session_id:string;state:string}[];approvals:Approval[]; latest_seq:number; paused:boolean; live_ids:string[];online_session_ids?:string[]; runs:Run[]; questions:AgentQuestion[]; batches:Batch[];agent_health?:AgentHealth[];totals?:Record<string,number>;task_page?:{offset:number;next_offset:number|null;total:number};task_counts?:Record<string,number>;pm_progress?:{percent:number;completed_weight:number;total_weight:number;remaining_equivalent_tasks:number;basis:string};payloads_omitted?:number};
 type Output = {seq:number; session_id:string; type:string; text?:string; code?:string; activity?:string; detail?:string; elapsed_seconds?:number; is_error?:boolean; state?:string; protocol_diagnostic?:Record<string,unknown>};
 type Project = {id:string; name:string; root:string};
 type Proposal = {id:string; tasks:{id:string; description:string; acceptance:string[]; dependencies:string[]}[]};
@@ -52,6 +52,7 @@ function App() {
   const [terminalVisible,setTerminalVisible]=useState(false);
   const [output,setOutput] = useState<Output[]>([]);
   const [error,setError] = useState('');
+  const [reviewHealth,setReviewHealth] = useState<{state?:string;code?:string;failures?:number;at?:number;next_retry_at?:number}>({});
   const [snapshotConnected,setSnapshotConnected] = useState(false);
   const [outputConnected,setOutputConnected] = useState(false);
   const [lastSyncAt,setLastSyncAt] = useState<number|null>(null);
@@ -72,7 +73,7 @@ function App() {
   async function api(path:string, body?:unknown, operationKey?:string) {
     const deleting=typeof body==='object'&&body!==null&&('_method' in body)&&(body as {_method?:string})._method==='DELETE';
     const payload=deleting ? Object.fromEntries(Object.entries(body as Record<string,unknown>).filter(([key])=>key!=='_method')) : body;
-    const init={method:deleting ? 'DELETE' : body === undefined ? 'GET':'POST', headers:{Authorization:`Bearer ${token}`,
+    const init={method:deleting ? 'DELETE' : body === undefined ? 'GET':'POST', cache:'no-store' as RequestCache, headers:{Authorization:`Bearer ${token}`,
       ...(body === undefined ? {} : {'Content-Type':'application/json','Idempotency-Key':operationKey||crypto.randomUUID()})},
       body:payload === undefined ? undefined:JSON.stringify(payload)};
     let response:Response|undefined;
@@ -184,16 +185,27 @@ function App() {
   const activeRuns=snapshot.tasks.filter(task=>['leased','verifying'].includes(task.state)).map(task=>({task,run:[...(snapshot.runs||[])].reverse().find(run=>run.task_id===task.id)}));
   const hasNewDelegation=!!goal.trim()&&!!criteriaItems.length;
   const delegationDisabled=!!busy||snapshot.paused||batchActive||(!hasNewDelegation&&!existingTodos.length);
+  const stoppedBatch=!!batch&&['failed','rework_required'].includes(batch.state);
+  const unavailableAgents=(snapshot.agent_health||[]).filter(agent=>agent.state==='unavailable');
+  const commandSessionIds=(snapshot.commands||[]).filter(command=>['dispatching','sent','sent_unconfirmed','acknowledged'].includes(command.state)).map(command=>command.session_id);
+  const onlineSessionIds=Array.from(new Set([...(snapshot.online_session_ids||[]),...snapshot.live_ids,...commandSessionIds]));
+  const latestSessionsByAgent=['codex','opencode','claude'].map(agent=>[...snapshot.sessions].reverse().find(session=>session.agent===agent)).filter((session):session is Session=>!!session);
+  const startupFailure=latestSessionsByAgent.find(session=>session.startup_state==='failed'&&!onlineSessionIds.includes(session.id));
+  const operationalStop=stoppedBatch||!!startupFailure||(onlineSessionIds.length===0&&unavailableAgents.length===3);
+  const operationalStopReason=batch?.reason||startupFailure?.startup_error||(unavailableAgents.length===3?'ALL_AGENTS_UNAVAILABLE':'');
+  const operationalStopAction=batch?.owner_next_action||(startupFailure?'PM 已保存检查点；请查看该 Agent 的启动诊断，PM 会按重试策略恢复。':unavailableAgents.length===3?'PM 已保留任务检查点；正在按退避策略重连 Agent。':'查看失败任务的验收证据后再重试。');
   return <div className="shell"><UpdateMonitor busy={!!busy}/><header><div className="brand"><span className="mark">A</span><div><strong>开发协作</strong><small>本地工作台 · {project.name}</small></div></div><div className="header-actions"><SyncStatus snapshotConnected={snapshotConnected} outputConnected={outputConnected} lastSyncAt={lastSyncAt} lastOutputAt={lastOutputAt} paused={snapshot.paused}/><button disabled={!!busy} onClick={()=>action('pause',()=>api(prefix+'/pause',{paused:!snapshot.paused}))}>{snapshot.paused?'继续派发':'暂停派发'}</button></div></header><ProjectPanel project={project} api={api} select={selectProject} disabled={!!busy}/><GlobalInputHistory api={api} usePlan={(savedGoal,savedAcceptance)=>{setGoal(savedGoal);setCriteria(savedAcceptance.join('\n'))}}/><PMDialogue key={'pm-dialogue:'+project.id} prefix={prefix} api={api}/>
-    <div className="overview"><div><p className="eyebrow">PROJECT WORKSPACE</p><h1>让每一步执行都有据可查。</h1><p className="muted">{project.root}</p></div><div className="metrics"><div><b>{snapshot.pm_progress?.percent??0}<i>%</i></b><span title={snapshot.pm_progress?.basis}>PM 预估总体进度</span><progress aria-label="PM 预估总体进度" value={snapshot.pm_progress?.percent??0} max="100"/></div><div><b>{snapshot.task_counts?.done??snapshot.tasks.filter(t=>t.state==='done').length}<i> / {snapshot.totals?.tasks??snapshot.tasks.length}</i></b><span>任务已验证</span></div><div><b>{snapshot.pm_progress?.remaining_equivalent_tasks??0}</b><span>预估剩余等价任务</span></div><div><b>{snapshot.live_ids.length}</b><span>在线会话</span></div><div><b>{pending.length}</b><span>本页等待审批</span></div></div></div>
+    <div className="overview"><div><p className="eyebrow">PROJECT WORKSPACE</p><h1>让每一步执行都有据可查。</h1><p className="muted">{project.root}</p></div><div className="metrics"><div><b>{snapshot.pm_progress?.percent??0}<i>%</i></b><span title={snapshot.pm_progress?.basis}>PM 预估总体进度</span><progress aria-label="PM 预估总体进度" value={snapshot.pm_progress?.percent??0} max="100"/></div><div><b>{snapshot.task_counts?.done??snapshot.tasks.filter(t=>t.state==='done').length}<i> / {snapshot.totals?.tasks??snapshot.tasks.length}</i></b><span>任务已验证</span></div><div><b>{snapshot.pm_progress?.remaining_equivalent_tasks??0}</b><span>预估剩余等价任务</span></div><div><b>{onlineSessionIds.length}</b><span>在线会话</span></div><div><b>{pending.length}</b><span>本页等待审批</span></div></div></div>
     {error&&<div role="alert" className="banner"><span>{error}</span><button onClick={()=>setError('')}>关闭</button></div>}
+    {operationalStop&&<section role="alert" aria-live="assertive" className="stop-banner"><strong>PM 已暂停推进，需要处理停止原因</strong><p>原因：{operationalStopReason||'PM_STOPPED'}。{operationalStopAction}</p>{batch?.state==='rework_required'&&<p>任务证据和检查点已保留；修复原因后可重新委托。</p>}</section>}
+    {reviewHealth.state==='error'&&<section role="status" className="banner"><strong>PM 定期自检未成功</strong><p>{reviewHealth.code||'PM_REVIEW_FAILED'}。检查点已保留，PM 将按退避时间再次尝试。</p></section>}
     {!!snapshot.payloads_omitted&&<p role="status">有 {snapshot.payloads_omitted} 条历史内容过大，页面仅显示安全摘要；完整记录仍保留在本地账本，任务操作不受影响。</p>}
     <details className="panel planning"><summary>与 PM 制定任务计划</summary><p className="muted">说明项目目标和验收条件。PM 生成草案，经你采用后加入任务清单。</p><form onSubmit={e=>{e.preventDefault();void action('planning',async()=>setProposal(await api(prefix+'/pm/proposals',{goal,acceptance:criteria.split('\n').filter(x=>x.trim())})))}}><div className="plan-inputs"><label>项目目标<textarea required value={goal} onChange={e=>setGoal(e.target.value)} placeholder="希望交付什么，范围和限制是什么？"/></label><label>项目验收条件（每行一条）<textarea required value={criteria} onChange={e=>setCriteria(e.target.value)} placeholder="如何判断工作完成？"/></label></div><GlobalPlanSelect api={api} usePlan={(savedGoal,savedAcceptance)=>{setGoal(savedGoal);setCriteria(savedAcceptance.join('\n'))}}/><button className="primary" disabled={!!busy||snapshot.paused}>{busy==='planning'?'PM 正在制定计划…':'生成任务草案'}</button></form>{proposal&&<div className="plan-draft"><h2>任务草案 · {proposal.tasks.length} 项</h2>{proposal.tasks.map(t=><article key={t.id}><strong>{t.description}</strong><p>{t.acceptance.join('；')}</p><small>{t.dependencies.length?`依赖 ${t.dependencies.length} 项任务`:'可独立开始'}</small></article>)}<button disabled={!!busy} className="primary" onClick={()=>action('adopt',async()=>{await api(prefix+'/pm/proposals/'+proposal.id+'/adopt',{});setProposal(null)})}>采用计划</button></div>}</details>
     <div className="panel"><button disabled={delegationDisabled} onClick={()=>void action('delegating',async()=>{if(hasNewDelegation){await api(prefix+'/pm/delegate',{goal,acceptance:criteriaItems,agent:executionAgent==='mixed'?'claude':executionAgent,agents:executionAgent==='mixed'?['codex','opencode','claude']:null,max_concurrency:executionAgent==='mixed'?3:1});setProposal(null)}else await api(prefix+'/batches',{agent:executionAgent==='mixed'?'claude':executionAgent,agents:executionAgent==='mixed'?['codex','opencode','claude']:null,max_concurrency:executionAgent==='mixed'?3:1,task_ids:existingTodos.map(task=>task.id)})})}>{busy==='delegating'?'PM 正在启动…':hasNewDelegation?'委托 PM 规划并执行':'委托 PM 执行现有待办'}</button><p className="muted">填写上方目标和业务验收标准时，PM 会重新规划后执行；未填写时，PM 直接执行当前 {existingTodos.length} 项待办。PM 自动维护独立验证、按依赖开发、盘点复审并验收；每任务最多两次尝试。</p>{hasNewDelegation&&<p className="muted">本次业务验收标准：{criteriaItems.join('、')}。</p>}</div>
     <label className="execution-agent">执行 Agent <select aria-label="执行 Agent" value={executionAgent} disabled={!!busy||batchActive} onChange={e=>setExecutionAgent(e.target.value)}><option value="mixed">PM 自动分配（最多 3 Agent 并行）</option><option value="claude">仅 Claude</option><option value="codex">仅 Codex</option><option value="opencode">仅 OpenCode</option></select></label><BatchControls batch={batch} pageOnly={(snapshot.totals?.tasks??0)>snapshot.tasks.length} disabled={!!busy||snapshot.paused||batchActive||!snapshot.tasks.some(t=>t.state==='todo')} start={()=>action('batch',()=>api(prefix+'/batches',{agent:executionAgent==='mixed'?'claude':executionAgent,agents:executionAgent==='mixed'?['codex','opencode','claude']:null,max_concurrency:executionAgent==='mixed'?3:1,task_ids:snapshot.tasks.filter(t=>t.state==='todo').map(t=>t.id)}))}/>    {activeRuns.length>0&&<section className="execution-now" aria-live="polite"><div><p className="eyebrow">LIVE EXECUTION</p><h2>正在执行 {activeRuns.length} 项任务</h2></div><div className="execution-list">{activeRuns.map(({task,run})=><article key={task.id}><span className="pulse"/><div><strong>{task.description}</strong><small>{run?.provider||task.agent||'PM'} · {run?.phase==='inventory'?'盘点剩余工作':run?.phase==='implementation'?'实现中':run?.phase==='verification'?'验收中':'执行中'}</small>{run?.reason&&<em>{run.reason}</em>}<TaskConsole run={run} live={output.filter(event=>event.session_id===run?.session_id)}/></div></article>)}</div></section>}
 <div className="workspace"><TaskList tasks={snapshot.tasks} runs={snapshot.runs||[]} output={output} executionAgent={executionAgent} disabled={!!busy||snapshot.paused||batchActive} createDisabled={!!busy} taskDescription={taskDescription} setTaskDescription={setTaskDescription} taskAcceptance={taskAcceptance} setTaskAcceptance={setTaskAcceptance} startTask={(task,run,agent)=>action('run',()=>api(prefix+'/tasks/'+task.id+'/runs',{agent,...(run?.state==='rework_required'?{base_sha:run.head_sha}:{})}))} createTask={()=>action('task',async()=>{await api(prefix+'/tasks',{id:'task_'+crypto.randomUUID().replaceAll('-',''),description:taskDescription,acceptance:taskAcceptance.split('\n').filter(x=>x.trim())});setTaskDescription('');setTaskAcceptance('')})} diagnostics={()=>action('diagnostics',async()=>{const data=await api(prefix+'/diagnostics');const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='diagnostics.json';a.click();URL.revokeObjectURL(url)})}/>
     <section className="agents" aria-label="Agent sessions">{['codex','opencode','claude'].map((agent,index)=>{
-      const activeSessions=[...snapshot.sessions].reverse().filter(session=>session.agent===agent&&snapshot.live_ids.includes(session.id));
+      const activeSessions=[...snapshot.sessions].reverse().filter(session=>session.agent===agent&&onlineSessionIds.includes(session.id));
       const latest=[...snapshot.sessions].reverse().find(session=>session.agent===agent);
       const cards=activeSessions.length?activeSessions:(latest?[{...latest,state:latest.state==='ready'?'offline':latest.state}]:[undefined]);
       const health=snapshot.agent_health?.find(item=>item.agent===agent);
@@ -206,19 +218,24 @@ function App() {
           takeover={()=>action('takeover',()=>api(prefix+`/sessions/${session!.id}/takeover`,{expected_epoch:session!.epoch,owner:'human'}))}
           interrupt={()=>action('interrupt',()=>api(prefix+`/sessions/${session!.id}/interrupt`,{}))}/>;
       })}</div>;
-    })}</section><aside className="panel approvals"><div className="section-title"><h2>审批与证据</h2><span>{pending.length}</span></div>{(snapshot.questions||[]).filter(q=>q.state!=='stale').map(q=><QuestionCard key={q.id} question={q} disabled={!!busy} answer={answers=>action('answer',()=>api(prefix+'/questions/'+q.id+'/answer',{answers}))}/>)}{pending.length===0?<p className="empty">暂无待处理审批。需要授权的操作会显示在这里。</p>:pending.map(a=><button className="approval-item" key={a.id} onClick={()=>action('approval',async()=>setApproval(await api(prefix+'/approvals/'+a.id)))}>工具操作待审批 <small>{a.session_id.slice(-8)}</small>查看操作 →</button>)}<div className="notice"><strong>验收以独立验证为准</strong><p>Agent 回合完成后，任务仍需验证。等待对账的会话不会自动重发输入。</p></div><p className="muted footnote">事件游标 #{snapshot.latest_seq}<br/>会话公开输出仅保留于本次服务内存。</p></aside></div>
+    })}</section><aside className="panel approvals"><div className="section-title"><h2>审批与证据</h2><span>{pending.length}</span></div>{(snapshot.questions||[]).filter(q=>q.state!=='stale').map(q=><QuestionCard key={q.id} question={q} disabled={!!busy} answer={answers=>action('answer',()=>api(prefix+'/questions/'+q.id+'/answer',{answers}))}/>)}{pending.length===0?<p className="empty">暂无待处理审批。需要授权的操作会显示在这里。</p>:pending.map(a=><button className="approval-item" key={a.id} onClick={()=>action('approval',async()=>setApproval(await api(prefix+'/approvals/'+a.id)))}>工具操作待审批 <small>{a.session_id.slice(-8)}</small>查看操作 →</button>)}<div className="notice"><strong>验收以独立验证为准</strong><p>Agent 回合完成后，任务仍需验证。等待对账的会话不会自动重发输入。</p></div><p className="muted footnote">事件游标 #{snapshot.latest_seq}<br/>会话输出按平台保留策略存储；超出预算的内容会显示摘要。</p></aside></div>
     {approval&&<div className="modal-backdrop"><section role="dialog" aria-modal="true" aria-label="审批工具操作" className="modal"><h2>审批工具操作</h2><p>请核对目标文件、操作内容和范围。</p><pre>{JSON.stringify(approval.operation,null,2)}</pre><div className="modal-actions"><button onClick={()=>setApproval(null)}>关闭</button>{['denied','approved'].map(d=><button key={d} disabled={!approval.live||!!busy} className={d==='approved'?'primary':''} onClick={()=>action('decision',async()=>{await api(prefix+'/approvals/'+approval.id+'/decision',{decision:d,operation_hash:approval.operation_hash,expected_revision:approval.revision});setApproval(null)})}>{d==='approved'?'批准本次操作':'拒绝'}</button>)}</div></section></div>}
-    <ReflectionPanel key={'reflection:'+project.id} prefix={prefix} api={api}/>
-    <AcceptancePanel key={'acceptance:'+project.id} prefix={prefix} api={api}/>
-    <CoveragePanel key={'coverage:'+project.id} prefix={prefix} api={api}/>
+    <DeferredPanel title="项目复盘与知识库"><ReflectionPanel key={'reflection:'+project.id} prefix={prefix} api={api} onHealth={setReviewHealth}/></DeferredPanel>
+    <DeferredPanel title="验收配置"><AcceptancePanel key={'acceptance:'+project.id} prefix={prefix} api={api}/></DeferredPanel>
+    <DeferredPanel title="需求覆盖"><CoveragePanel key={'coverage:'+project.id} prefix={prefix} api={api}/></DeferredPanel>
     {snapshot.task_page&&snapshot.task_page.total>100&&<div className="panel"><p>任务分页：共 {snapshot.task_page.total} 项，当前从第 {snapshot.task_page.offset+1} 项开始。批次执行仅针对本页显示的待办。</p><button disabled={!!busy||taskOffset===0} onClick={()=>{generation.current++;setTaskOffset(Math.max(0,taskOffset-100))}}>上一页任务</button><button disabled={!!busy||snapshot.task_page.next_offset===null} onClick={()=>{generation.current++;setTaskOffset(snapshot.task_page!.next_offset!)}}>下一页任务</button></div>}
-    <HistoryPanel key={'history:'+project.id} prefix={prefix} api={api}/>
-    <ExpertPanel key={'experts:'+project.id} prefix={prefix} api={api} batches={snapshot.batches}/>
-    <EvaluationPanel key={'evaluation:'+project.id} prefix={prefix} api={api}/>
-    <RecoveryPanel key={'recovery:'+project.id} prefix={prefix} api={api} runs={snapshot.runs} tasks={snapshot.tasks}/>
-    <ClosurePanel key={'closure:'+project.id} prefix={prefix} api={api}/>
+    <DeferredPanel title="历史交互"><HistoryPanel key={'history:'+project.id} prefix={prefix} api={api}/></DeferredPanel>
+    <DeferredPanel title="专家审查"><ExpertPanel key={'experts:'+project.id} prefix={prefix} api={api} batches={snapshot.batches}/></DeferredPanel>
+    <DeferredPanel title="知识效果评测"><EvaluationPanel key={'evaluation:'+project.id} prefix={prefix} api={api}/></DeferredPanel>
+    <DeferredPanel title="恢复与对账"><RecoveryPanel key={'recovery:'+project.id} prefix={prefix} api={api} runs={snapshot.runs} tasks={snapshot.tasks}/></DeferredPanel>
+    <DeferredPanel title="项目收尾报告"><ClosurePanel key={'closure:'+project.id} prefix={prefix} api={api}/></DeferredPanel>
     {terminalVisible?<Suspense fallback={<p>正在加载终端…</p>}><TerminalPanel key={'terminal:'+project.id} prefix={prefix} token={token} paused={snapshot.paused}/></Suspense>:<section className="panel"><button onClick={()=>setTerminalVisible(true)}>打开本机终端</button><p>打开时加载终端组件并连接输出。</p></section>}
   </div>;
+}
+
+function DeferredPanel({title,children}:{title:string;children:React.ReactNode}) {
+  const [opened,setOpened]=useState(false);
+  return <section className="panel deferred-panel"><button type="button" aria-expanded={opened} onClick={()=>setOpened(value=>!value)}>{opened?'收起':'打开'}{title}</button>{opened&&<Suspense fallback={<p>正在加载{title}…</p>}>{children}</Suspense>}</section>;
 }
 
 function GlobalPlanSelect({api,usePlan}:{api:(path:string,body?:unknown)=>Promise<any>;usePlan:(goal:string,acceptance:string[])=>void}) {
@@ -254,7 +271,7 @@ function TaskList(props:TaskListProps) {
 function TaskItem({task,run,events,disabled,start,agent}:{agent:string;task:Task;run?:Run;events:Output[];disabled:boolean;start:()=>unknown}) {
   const running=!!run&&!['done','rework_required','reconciling','reconciled','failed'].includes(run.state);
   const states:Record<string,string>={preparing:'准备工作树',starting:'启动 Agent',running:'执行中 · 可在会话卡查看',reviewing:run?.phase==='inventory'?'盘点剩余工作':'架构、测试与体验多视角复审',committing:'保存修改',verifying:'独立验证中',done:'验收通过',rework_required:'检查未通过，可继续返工',reconciling:'需要对账，已停止自动执行',failed:'未能启动'};
-  return <article className="task"><strong title={task.id}>{task.description}</strong><span className={'status '+task.state}>{labels[task.state]||task.state}</span><small>尝试 {task.attempt}</small>{run&&<p className="run-status">{states[run.state]||run.state}{run.reason&&<small>{run.reason}</small>}</p>}{run?.check_diagnostics&&<details className="check-diagnostics"><summary>验收失败诊断</summary>{Object.entries(run.check_diagnostics).map(([name,detail])=><section key={name}><b>{name}</b><small>状态 {detail.status||'未知'} · 退出码 {detail.exit_code??'无'} · 耗时 {detail.duration_seconds?.toFixed(2)??'未知'} 秒</small>{(['stderr','stdout'] as const).map(stream=>detail.streams?.[stream]?.excerpt&&<pre key={stream}>{stream}: {detail.streams[stream].excerpt}{detail.streams[stream].excerpt_truncated?'\n[仅展示前 16 KiB]':''}</pre>)}</section>)}</details>}{run?.artifact_sha256&&<details><summary>验证证据</summary><small className="evidence">SHA-256: {run.artifact_sha256}</small></details>}{run&&<TaskConsole run={run} live={events} open={false} title={`查看 Agent 原始输入与输出 · ${run.state}`}/>}{task.state==='todo'&&<button disabled={disabled||running} onClick={start}>{run?.state==='rework_required'?'继续返工':`交给 ${{claude:'Claude',codex:'Codex',opencode:'OpenCode'}[agent]} 执行`}</button>}</article>;
+  return <article id={'task-'+task.id} className="task"><strong title={task.id}>{task.description}</strong><span className={'status '+task.state}>{labels[task.state]||task.state}</span><small>尝试 {task.attempt}</small>{run&&<p className="run-status">{states[run.state]||run.state}{run.reason&&<small>{run.reason}</small>}</p>}{run?.check_diagnostics&&<details className="check-diagnostics"><summary>验收失败诊断</summary>{Object.entries(run.check_diagnostics).map(([name,detail])=><section key={name}><b>{name}</b><small>状态 {detail.status||'未知'} · 退出码 {detail.exit_code??'无'} · 耗时 {detail.duration_seconds?.toFixed(2)??'未知'} 秒</small>{(['stderr','stdout'] as const).map(stream=>detail.streams?.[stream]?.excerpt&&<pre key={stream}>{stream}: {detail.streams[stream].excerpt}{detail.streams[stream].excerpt_truncated?'\n[仅展示前 16 KiB]':''}</pre>)}</section>)}</details>}{run?.artifact_sha256&&<details><summary>验证证据</summary><small className="evidence">SHA-256: {run.artifact_sha256}</small></details>}{run&&<TaskConsole run={run} live={events} open={false} title={`查看 Agent 原始输入与输出 · ${run.state}`}/>}{task.state==='todo'&&<button disabled={disabled||running} onClick={start}>{run?.state==='rework_required'?'继续返工':`交给 ${{claude:'Claude',codex:'Codex',opencode:'OpenCode'}[agent]} 执行`}</button>}</article>;
 }
 
 function TaskConsole({run,live,open=true,title='实时执行控制台'}:{run?:Run;live:Output[];open?:boolean;title?:string}) {

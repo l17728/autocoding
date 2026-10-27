@@ -53,8 +53,13 @@ async def main(agents):
                 entry.update(process_output='failed',reason=getattr(exc,'code','TERMINAL_PROBE_FAILED'))
             finally:
                 if sid and sid in host.terminals.sessions:
+                    terminal=host.terminals.sessions[sid]
                     await host.terminals.stop(sid)
-                    entry['local_stop']='passed' if host.terminals.records[sid]['stopped_confirmed'] else 'failed'
+                    record=host.terminals.records[sid]
+                    entry.update(local_stop='passed' if record['stopped_confirmed'] else 'failed',
+                                 stop_failure=record.get('stop_failure'),
+                                 shutdown_diagnostic=getattr(terminal,'shutdown_diagnostic',None),
+                                 shutdown_timings=record.get('shutdown_timings'))
             print(json.dumps({'agent':agent,**entry}),flush=True)
             (output/'report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
     finally:

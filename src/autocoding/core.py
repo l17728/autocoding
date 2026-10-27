@@ -495,4 +495,8 @@ class Core:
                                 (after, limit) if limit is not None else (after,)).fetchall()
             return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
 
+    def latest_event_sequence(self):
+        with self.connection() as conn:
+            return conn.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]
+
 

@@ -36,6 +36,15 @@ for line in sys.stdin:
               "message":{"role":"assistant","content":[{"type":"text","text":"Status receipt handled."}]}})
         send(result)
         continue
+    if mode == "ack-then-replay":
+        send({"type":"system","subtype":"thinking_tokens","session_id":sid,
+              "user_message_uuid":mid})
+        send({**message,"isReplay":True})
+        send({"type":"assistant","session_id":sid,"user_message_uuid":mid,
+              "user_message_uuids":[mid],"parent_tool_use_id":None,
+              "message":{"role":"assistant","content":[{"type":"text","text":"Late replay handled."}]}})
+        send(result)
+        continue
     if mode == "tool-progress":
         send({**message, "isReplay": True})
         send({"type":"tool_progress","session_id":sid,"tool_name":"Bash",

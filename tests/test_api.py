@@ -165,6 +165,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(200,first.status_code,first.text)
         self.assertEqual(first.json(),self.client.post(path,headers=headers,json=body).json())
         self.assertEqual(2,len(self.client.get(self.prefix+'/pm/dialogue',headers=self.headers).json()['conversation']['items']))
+        searched=self.client.get(self.prefix+'/pm/dialogue',headers=self.headers,params={'q':'总体进度'})
+        self.assertEqual(200,searched.status_code)
+        self.assertEqual(1,searched.json()['conversation']['total'])
+        self.assertIn('总体进度',searched.json()['conversation']['items'][0]['content'])
         conflict=self.client.post(path,headers=headers,json={**body,'text':'different request'})
         self.assertEqual(409,conflict.status_code)
 

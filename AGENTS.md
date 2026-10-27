@@ -1,40 +1,39 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+This is an implemented Windows-first local development collaboration platform. Treat the source and current tests as authoritative; design documents are proposals unless `docs/implementation-status.md` records implementation evidence.
 
-This repository currently contains design documents only:
+## Project structure
 
-- `AI操作员平台设计文档.docx`: product vision and architecture for an AI operator that observes, controls, and verifies desktop workflows.
-- `多Agent协作开发平台_软件设计文档.docx`: architecture for a collaborative development platform with a PM Agent, Code Agents, Web Service, MCP interface, and UI.
+- `src/autocoding/`: Python service, adapters, PM workflow, persistence, diagnostics, and project isolation.
+- `ui/src/`: React and TypeScript web application.
+- `tests/`: Python unit and integration tests.
+- `ui/e2e/`: browser end-to-end tests.
+- `tools/`: local service lifecycle, probes, workload tools, and reporting scripts.
+- `docs/`: architecture, operator guidance, and dated implementation evidence.
 
-No source, test, or asset directories exist yet. Treat architectures and directory layouts described in these documents as proposals, not implemented features. When implementation begins, document the actual module layout and entry points here.
+## Build and run
 
-## Build, Test, and Development Commands
-
-No build system, dependency manifest, runnable application, or automated test command is configured. Do not assume commands such as `npm test` or `dotnet build` apply.
-
-Use PowerShell to inspect the current documents:
+Use the project virtual environment on Windows:
 
 ```powershell
-Get-ChildItem -File *.docx
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+cd ui
+npm.cmd run build
+npx.cmd playwright test
+cd ..
+.\tools\start-local.ps1
 ```
 
-Open edited documents in a DOCX-compatible editor to verify rendering. Add exact setup, build, run, and test commands when the first implementation is introduced.
+Stop the local service with `tools\stop-local.ps1`. Do not restart it while any registered project has an active run, in-flight command, or reconciliation in progress. Inspect project snapshots and liveness first.
 
-## Coding Style & Naming Conventions
+## Conventions
 
-No programming language, formatter, linter, or code indentation convention is established. Introduce and document these alongside the initial source code.
+- Preserve UTF-8 and existing Chinese product terminology.
+- Keep public diagnostics bounded and redact credentials, prompts, and provider frame values.
+- Persist task state and evidence before reporting completion. A provider response is not acceptance; independent checks are authoritative.
+- Keep project data isolated by project ID and avoid modifying hosted project directories while working on the platform.
+- Add behavior tests for code changes and update `docs/implementation-status.md` with dated evidence and remaining limitations.
 
-For documentation, preserve the existing Chinese terminology, descriptive filenames, numbered sections, and architecture vocabulary. Use UTF-8 and descriptive headings for Markdown; keep examples concrete. Avoid unrelated reformatting or renaming of design files.
+## Verification boundaries
 
-## Testing Guidelines
-
-No testing framework or coverage threshold exists. For document changes, verify headings, tables, diagrams, and cross-references; refresh the table of contents where applicable. Check consistency between both designs and identify unresolved differences explicitly.
-
-For future code changes, include relevant behavioral tests and document their naming convention and execution commands.
-
-## Commit & Pull Request Guidelines
-
-This checkout has no Git metadata, so no historical commit convention can be verified. When version control is introduced, use concise, imperative messages, for example `docs: clarify PM Agent responsibilities`.
-
-Pull requests should describe the purpose, affected documents or modules, validation performed, and unresolved design questions. Link relevant issues when available. For binary DOCX changes, summarize changed sections in the description and include screenshots when layout or diagrams change.
+Unit tests and builds do not establish long-running production reliability or real-provider availability. Record command, exit code, and fresh output for every claimed verification. Keep real CLI/provider acceptance separate from simulated protocol tests.

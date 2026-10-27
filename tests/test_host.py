@@ -143,6 +143,21 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.gather(*list(self.host.tasks))
                 self.assertEqual(expected,restart.await_count)
 
+    async def test_unexpected_event_failure_logs_type_without_exception_text(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        runtime=SimpleNamespace(closed=False,
+            next_event=AsyncMock(side_effect=ValueError('PRIVATE_PROVIDER_FRAME')),
+            close=AsyncMock())
+        self.host.metadata['s']={}
+
+        await self.host._consume('s',runtime)
+
+        event=self.host.output[-1]
+        self.assertEqual('SESSION_EVENT_FAILED',event['code'])
+        self.assertEqual('ValueError',event['error_type'])
+        self.assertNotIn('PRIVATE_PROVIDER_FRAME',str(event))
+
     async def asyncSetUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

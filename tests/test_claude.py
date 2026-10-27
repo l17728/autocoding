@@ -99,6 +99,15 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(any(event["method"] == "turn/completed" for event in events))
                 self.assertEqual("completed", self.core.command(command)["state"])
 
+    async def test_late_replay_after_correlated_ack_does_not_freeze_turn(self):
+        runtime = await self.runtime("ack-then-replay")
+        command = self.enqueue("ack-then-replay")
+        receipt = await runtime.send(command, "中文输入")
+        self.assertEqual("acknowledged", receipt["state"])
+        events = await self.finish(runtime, command)
+        self.assertTrue(any(event["method"] == "turn/completed" for event in events))
+        self.assertEqual("completed", self.core.command(command)["state"])
+
     async def test_correlated_assistant_turn_is_an_ack_without_legacy_replay(self):
         runtime = await self.runtime("no-replay")
         command = self.enqueue('no-replay')
@@ -126,6 +135,9 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(TransportError, "ACK_MISMATCH"):
                     await runtime.send(command, "中文输入")
                 self.assertEqual("delivery_unknown", self.core.command(command)["state"])
+                diagnostic=runtime.adapter.last_error_diagnostic
+                self.assertEqual('ack_match',diagnostic['failure_phase'])
+                self.assertFalse(diagnostic['checks']['turn_matches'] if mode=='wrong-ack' else diagnostic['checks']['content_matches'])
 
     async def test_provider_failure_is_terminal_without_raw_error(self):
         runtime = await self.runtime("error")

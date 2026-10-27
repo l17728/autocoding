@@ -5,6 +5,7 @@ import uuid
 
 from .core import DomainError, digest, encoded
 from .integration import Integration
+from .process_lock import ProcessLock
 from .workspaces import git
 
 FINAL = {'verified_candidate', 'rework_required', 'reconciling', 'failed'}
@@ -14,9 +15,15 @@ def stop_details(reason):
     """Translate a durable stop code into the Owner's actual next action."""
     code = str(reason or 'BATCH_FAILED')
     upper = code.upper()
+    if upper == 'BATCH_ATTEMPT_LIMIT':
+        return {'stop_category':'retry_exhausted',
+                'owner_next_action':'该任务已达到本批次的尝试上限。请查看任务的失败验证证据，修正实现或验收条件后再重新委托；当前无需等待模型额度恢复。'}
+    if upper == 'BATCH_DISPATCH_LOCKED':
+        return {'stop_category':'scheduler_owned',
+                'owner_next_action':'另一个工作台进程正在管理此项目的批次；PM 会在当前调度释放后恢复，不要重复提交任务。'}
     if 'NETWORK' in upper or 'CONNECTION' in upper or 'TIMEOUT' in upper:
         return {'stop_category':'external_network','owner_next_action':'PM 已保存检查点；请在网络或供应商恢复后选择继续。'}
-    if 'RATE' in upper or 'QUOTA' in upper or 'LIMIT' in upper:
+    if 'RATE' in upper or 'QUOTA' in upper or 'API_LIMIT' in upper or 'USAGE_LIMIT' in upper:
         return {'stop_category':'model_limit','owner_next_action':'PM 已保存检查点；请在模型额度恢复后选择继续。'}
     if 'APPROVAL' in upper or 'QUESTION' in upper or 'PERMISSION' in upper:
         return {'stop_category':'owner_decision','owner_next_action':'请在审批与问题区域完成该项明确请求；PM 将自动继续。'}
@@ -33,6 +40,8 @@ class Coordinator:
         self.current = None
         self.reserved = {}
         self.health_task = None
+        self._start_guard = asyncio.Lock()
+        self._process_lock = ProcessLock(host.storage / 'coordinator-dispatch.lock')
 
     def health(self, agent):
         with self.core.connection() as conn:
@@ -106,6 +115,15 @@ class Coordinator:
     def list(self):
         with self.core.connection() as conn:
             rows = [json.loads(r['value']) for r in conn.execute("SELECT value FROM metadata WHERE key LIKE 'batch:%'")]
+        # Repair durable stop guidance written by older versions, so PM and
+        # dashboard views agree about retry exhaustion versus provider quota.
+        for record in rows:
+            if record.get('reason') != 'BATCH_ATTEMPT_LIMIT':
+                continue
+            details=stop_details(record['reason'])
+            changed={key:value for key,value in details.items() if record.get(key)!=value}
+            if changed:
+                self.save(record,record.get('state','rework_required'),**changed)
         return sorted(rows, key=lambda r:r['created_at'])
 
     def save(self, record, state, **values):
@@ -216,9 +234,13 @@ class Coordinator:
         if any(self.health(agent).get('state')=='unavailable' for agent in ('claude','opencode','codex')):
             if self.health_task is None or self.health_task.done():
                 self.health_task=self.host._background(self.monitor_health())
+        if self.current is not None:
+            return
         for record in self.list():
             if record['state'] not in {'queued','running','paused','reconciling'}:
                 continue
+            if not self._process_lock.acquire():
+                return
             try:
                 if record['state'] in {'running','reconciling'} and record.get('max_concurrency',1)>1:
                     # A batch interrupted while the service was unresponsive
@@ -241,10 +263,14 @@ class Coordinator:
                 self.reserved=dict.fromkeys(record['task_ids'],record['id'])
                 self.save(record,'queued',reason='BATCH_RESTART_RESUMED',active_tasks=[])
                 self.host._background(self._perform(record,policies,checks))
+                return
             except Exception as exc:
                 self.current, self.reserved = None, {}
                 reason=getattr(exc,'code','BATCH_RECOVERY_RECONCILIATION_REQUIRED')
-                self.save(record,'reconciling',reason=reason,**stop_details(reason))
+                try:
+                    self.save(record,'reconciling',reason=reason,**stop_details(reason))
+                finally:
+                    self._process_lock.release()
 
     def resume_after_recovery(self):
         """Resume a stopped durable batch after its uncertain run is retired."""
@@ -256,6 +282,17 @@ class Coordinator:
         return True
 
     async def start(self, task_ids, *, max_attempts=2, agent='claude', agents=None, max_concurrency=1):
+        async with self._start_guard:
+            if not self._process_lock.acquire():
+                raise DomainError('BATCH_DISPATCH_LOCKED')
+            try:
+                return await self._start_batch(task_ids, max_attempts=max_attempts, agent=agent,
+                                               agents=agents, max_concurrency=max_concurrency)
+            except BaseException:
+                self._process_lock.release()
+                raise
+
+    async def _start_batch(self, task_ids, *, max_attempts=2, agent='claude', agents=None, max_concurrency=1):
         agents = agents if agents is not None else [agent]
         if (not isinstance(agents,list) or not agents or len(agents)>3 or
                 any(a not in {'claude','codex','opencode'} for a in agents) or len(set(agents))!=len(agents)
@@ -501,6 +538,7 @@ class Coordinator:
                     work.cancel()
             await asyncio.gather(*(work for _,work in running.values()),return_exceptions=True)
             self.current, self.reserved = None, {}
+            self._process_lock.release()
 
     def save_stopped_batch(self, record, task_stops):
         """Finish only after every runnable task had a chance to proceed."""

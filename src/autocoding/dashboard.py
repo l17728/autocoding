@@ -20,6 +20,18 @@ RECORDS = {'runs': 'run:', 'batches': 'batch:', 'questions': 'question:', 'closu
 PROGRESS_WEIGHT = {'done': 1.0, 'verifying': .85, 'leased': .50,
                    'todo': 0.0, 'blocked': 0.0, 'cancelled': 0.0}
 
+IN_FLIGHT_COMMAND_STATES = ('dispatching', 'sent', 'sent_unconfirmed', 'acknowledged')
+
+
+def in_flight_command_sessions(conn):
+    """Accepted/delivering Agent turns remain active until their command completes."""
+    marks=','.join('?' for _ in IN_FLIGHT_COMMAND_STATES)
+    rows=conn.execute(f'''SELECT DISTINCT c.session_id FROM commands c
+        JOIN sessions s ON s.id=c.session_id
+        WHERE c.state IN ({marks}) AND s.state='ready' ORDER BY c.session_id''',
+        IN_FLIGHT_COMMAND_STATES).fetchall()
+    return {row['session_id'] for row in rows}
+
 
 def pm_progress(conn):
     rows = list(conn.execute('SELECT state,acceptance FROM tasks'))
@@ -103,9 +115,12 @@ class Dashboard:
             row=conn.execute("SELECT value FROM metadata WHERE key GLOB 'batch:*' "
                 "ORDER BY COALESCE(json_extract(value,'$.created_at'),0) DESC,key DESC LIMIT 1").fetchone()
             batch=json.loads(row['value']) if row else None
+            command_sessions=in_flight_command_sessions(conn)
+        runtime_sessions={sid for sid,runtime in self.host.runtimes.items() if not runtime._quarantined}
+        online_sessions=runtime_sessions|command_sessions
         return {'project_id':self.host.project_id,'paused':self.host.paused,'task_counts':counts,
                 'stale_leases':stale_leases,
-                'active_sessions':sum(1 for runtime in self.host.runtimes.values() if not runtime._quarantined),
+                'active_sessions':len(online_sessions),'online_session_ids':sorted(online_sessions),
                 'batch':({k:batch.get(k) for k in ('id','state','reason','active_tasks','attempts','max_attempts')}
                          if batch else None)}
 
@@ -122,7 +137,14 @@ class Dashboard:
                     if row:
                         pages['runs']['items'].append(json.loads(row['value']))
             result = {kind: list(reversed(p['items'])) if kind in {'runs', 'batches', 'sessions'} else p['items'] for kind, p in pages.items()}
+            # Normalize historical stop guidance for clients that read the
+            # snapshot directly without first querying the PM coordinator.
+            from .coordinator import stop_details
+            for record in result['batches']:
+                if record.get('reason'):
+                    record.update(stop_details(record['reason']))
             result['latest_seq'] = conn.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]
+            command_sessions=in_flight_command_sessions(conn)
             result['totals'] = {kind: p['total'] for kind, p in pages.items()}
             result['task_page'] = {k: v for k, v in pages['tasks'].items() if k != 'items'}
             result['task_counts'] = {r['state']: r['n'] for r in conn.execute('SELECT state,COUNT(*) n FROM tasks GROUP BY state')}
@@ -164,8 +186,10 @@ class Dashboard:
                         event['text']=readable_text(text)[:2048] if isinstance(text,str) else ''
                 run['conversation']={'instruction':instruction,'events':events}
         visible = {s['id'] for s in result['sessions']}
+        runtime_sessions={sid for sid,runtime in self.host.runtimes.items() if not runtime._quarantined}
         result.update(metadata={sid: data for sid, data in self.host.metadata.items() if sid in visible},
-                      paused=self.host.paused, live_ids=[sid for sid, runtime in self.host.runtimes.items() if not runtime._quarantined])
+                      paused=self.host.paused, live_ids=sorted(runtime_sessions),
+                      online_session_ids=sorted(runtime_sessions|command_sessions))
         used, omitted_count = 0, 0
         for kind in ('tasks', 'approvals', 'questions', 'sessions', 'runs', 'batches', 'commands'):
             for index, item in enumerate(result[kind]):
